@@ -1,15 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:best-practices",
-    ":dependencyDashboard"
-  ],
-  "enabledManagers": [
-    "cargo",
-    "github-actions",
-    "custom.regex",
-    "nix"
-  ],
+  "extends": ["config:best-practices", ":dependencyDashboard"],
+  "enabledManagers": ["cargo", "github-actions", "custom.regex", "nix"],
   "nix": {
     "enabled": true
   },
@@ -28,32 +20,24 @@
       "automerge": true
     },
     {
-      "matchUpdateTypes": [
-        "major"
-      ],
+      "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true,
       "automerge": false
     },
     {
-      "matchDatasources": [
-        "rust"
-      ],
+      "matchDatasources": ["rust"],
       "dependencyDashboardApproval": true,
       "automerge": false
     },
     {
-      "matchManagers": [
-        "nix"
-      ],
+      "matchManagers": ["nix"],
       "automerge": false
     }
   ],
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": [
-        "/^rust-toolchain\\.toml$/"
-      ],
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
       "matchStrings": [
         "channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
       ],
