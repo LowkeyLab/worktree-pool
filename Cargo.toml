@@ -5,10 +5,10 @@ edition = "2024"
 rust-version = "1.96"
 description = "Explicit ownership for persistent local Git worktrees"
 license = "AGPL-3.0-only"
-repository = "https://github.com/LowkeyLab/bazel-repo"
+repository = "https://github.com/LowkeyLab/worktree-pool"
 readme = "README.md"
-# Keep the standalone distribution independent of Bazel adapters and benchmarks.
-include = ["/*.rs", "/Cargo.lock", "/LICENSE", "/README.md", "/CONTRIBUTING.md", "/WIRE_SCHEMA.md", "/DEPENDENCIES.md"]
+# Package the public sources and test helper; repository automation stays outside the crate.
+include = ["/*.rs", "/Cargo.lock", "/LICENSE", "/README.md", "/CONTRIBUTING.md", "/WIRE_SCHEMA.md", "/DEPENDENCIES.md", "/test_support/*.rs"]
 
 [lib]
 path = "lib.rs"
@@ -16,6 +16,14 @@ path = "lib.rs"
 [[bin]]
 name = "worktree-pool"
 path = "main.rs"
+
+[[test]]
+name = "cli"
+path = "cli_test.rs"
+
+[[example]]
+name = "crash_helper"
+path = "test_support/main.rs"
 
 [dependencies]
 anyhow = "=1.0.104"

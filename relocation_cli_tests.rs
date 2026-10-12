@@ -28,7 +28,7 @@ fn assert_relocation_suffix(actual: &Value, before: &Value, count: usize) {
     let prefix = before["events"].as_array().unwrap();
     assert_that!(events.len(), eq(prefix.len() + count * 2));
     assert_that!(&events[..prefix.len()], eq(prefix.as_slice()));
-    for pair in events[prefix.len()..].chunks_exact(2) {
+    for pair in events[prefix.len()..].as_chunks::<2>().0 {
         assert_that!(
             pair[0]["type"].as_str(),
             eq(Some(
