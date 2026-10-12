@@ -194,7 +194,10 @@ class Runner:
                 time.perf_counter() - start - sample["acquire_seconds"]
             )
             build_start = time.perf_counter()
-            self.command([self.cargo, "build", "--locked"], checkout)
+            self.command(
+                [self.cargo, "build", "--locked", "--target-dir", checkout / "target"],
+                checkout,
+            )
             sample["build_seconds"] = time.perf_counter() - build_start
             sample["total_seconds"] = time.perf_counter() - start
             # Commit private edits before release; never discard protected work.

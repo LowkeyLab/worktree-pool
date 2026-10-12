@@ -47,7 +47,11 @@ class BenchmarkTests(unittest.TestCase):
             'version = 4\n[[package]]\nname = "benchmark-fixture"\nversion = "0.1.0"\n'
         )
         (source / "main.rs").write_text("fn main() {}\n")
-        (source / ".gitignore").write_text("/target/\n")
+        (source / ".gitignore").write_text("/target/\n/alternate-target/\n")
+        (source / ".cargo").mkdir()
+        (source / ".cargo/config.toml").write_text(
+            '[build]\ntarget-dir = "alternate-target"\n'
+        )
         subprocess.run(
             ["git", "init", "-b", "main", source], check=True, capture_output=True
         )
@@ -86,6 +90,13 @@ class BenchmarkTests(unittest.TestCase):
                 source, root / "results", self.binary(), pairs=2, edit_file="main.rs"
             ).run()
             self.assertEqual(result["status"], "completed")
+            self.assertTrue(
+                all(
+                    sample["retained_target_logical_bytes"] > 0
+                    for sample in result["samples"]
+                    if sample["arm"] == "pooled"
+                )
+            )
             self.assertEqual((source / "main.rs").read_bytes(), before)
             for workload in ("unchanged", "small_edit"):
                 self.assertEqual(result["summary"][workload]["complete_pairs"], 2)
