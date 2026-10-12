@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Verify the real standalone archive, locked source install and installed public CLI.
 
-Run through :acceptance so Cargo/rustc come from the native Bazel toolchain. All build
-and runtime fixtures are private to the explicitly supplied new output directory.
+Cargo builds the archive, crash helper, and integration harness. All build and
+runtime fixtures are private to the explicitly supplied new output directory.
 """
 
 import argparse
@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import urllib.request
 from pathlib import Path
 
 import tomllib
@@ -46,21 +47,18 @@ def main():
     if sys.flags.optimize:
         raise RuntimeError("acceptance requires enabled assertions")
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in (
-        "cargo",
-        "rustc",
-        "manifest",
-        "git_source",
-        "zlib_source",
-        "cli_tests",
-    ):
-        parser.add_argument(name, type=Path)
-    parser.add_argument("--sysroot", type=Path, required=True)
-    parser.add_argument("--runfiles-root", type=Path, required=True)
-    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--cargo", type=Path, default=shutil.which("cargo"))
+    parser.add_argument("--rustc", type=Path, default=shutil.which("rustc"))
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(__file__).resolve().parents[1] / "Cargo.toml",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--phase", choices=("package", "all"), default="all")
     args = parser.parse_args()
+    if args.cargo is None or args.rustc is None:
+        parser.error("Cargo and rustc must be available")
     output = args.output.resolve()
     output.mkdir(mode=0o700)  # Refuse accidental reuse or cleanup of caller data.
     log = output / "commands.log"
@@ -73,22 +71,35 @@ def main():
             or path.name in ("LICENSE", "BUILD.bazel")
         ):
             shutil.copyfile(path, package / path.name)
+    (package / "test_support").mkdir()
+    shutil.copyfile(
+        args.manifest.parent / "test_support/main.rs", package / "test_support/main.rs"
+    )
     env = {
         key: value
         for key, value in os.environ.items()
         if not key.startswith(("CARGO_", "RUST", "PYTHON"))
     }
+    for key in ("RUSTUP_TOOLCHAIN", "RUSTUP_HOME"):
+        if key in os.environ:
+            env[key] = os.environ[key]
     env.update(
         RUSTC=str(args.rustc),
         CARGO_HOME=str(output / "cargo-home"),
         CARGO_TARGET_DIR=str(output / "cargo-target"),
         CARGO_BUILD_JOBS="2",
-        RUSTFLAGS=f"--sysroot={args.sysroot}",
     )
     rust = subprocess.check_output([args.rustc, "-Vv"], env=env, text=True)
     cargo = subprocess.check_output([args.cargo, "-V"], env=env, text=True)
-    assert "release: 1.96.0\n" in rust, rust
-    assert cargo.startswith("cargo 1.96.0 "), cargo
+    minimum = tomllib.loads(args.manifest.read_text())["package"]["rust-version"]
+    release = next(
+        line.split(": ", 1)[1]
+        for line in rust.splitlines()
+        if line.startswith("release: ")
+    )
+    assert tuple(map(int, release.split("-")[0].split("."))) >= tuple(
+        map(int, minimum.split("."))
+    ), rust
     assert "host: x86_64-unknown-linux-gnu\n" in rust, rust
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     (output / "toolchain.txt").write_text(rust + cargo)
@@ -118,6 +129,7 @@ def main():
         "DEPENDENCIES.md",
         "lib.rs",
         "main.rs",
+        "test_support/main.rs",
     }
     assert required <= set(contents), required - set(contents)
     assert all(
@@ -229,7 +241,29 @@ def main():
         env=env,
         log=output / "native-build-tools.log",
     )
-    zlib = extract(args.zlib_source, output / "zlib-source", allow_links=True)
+
+    def download(url, expected_hash, filename):
+        destination = output / filename
+        with (
+            urllib.request.urlopen(url, timeout=120) as response,
+            destination.open("wb") as stream,
+        ):
+            shutil.copyfileobj(response, stream)
+        if digest(destination) != expected_hash:
+            raise ValueError(f"source checksum mismatch: {filename}")
+        return destination
+
+    zlib_source = download(
+        "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz",
+        "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+        "zlib-1.3.1.tar.gz",
+    )
+    git_source = download(
+        "https://www.kernel.org/pub/software/scm/git/git-2.36.0.tar.xz",
+        "af5ebfc1658464f5d0d45a2bfd884c935fb607a10cc021d95bc80778861cc1d3",
+        "git-2.36.0.tar.xz",
+    )
+    zlib = extract(zlib_source, output / "zlib-source", allow_links=True)
     run(
         ["sh", "configure", "--static", f"--prefix={output / 'zlib'}"],
         cwd=zlib,
@@ -237,7 +271,7 @@ def main():
         log=log,
     )
     run(["make", "-j2", "install"], cwd=zlib, env=env, log=log)
-    git = extract(args.git_source, output / "git-source", allow_links=True)
+    git = extract(git_source, output / "git-source", allow_links=True)
     flags = [
         "CFLAGS=-O2 -std=gnu99",
         f"prefix={output / 'git'}",
@@ -252,6 +286,39 @@ def main():
         "NO_ICONV=YesPlease",
     ]
     run(["make", "-j2", *flags, "install"], cwd=git, env=env, log=log)
+    run(
+        [args.cargo, "build", "--locked", "--example", "crash_helper"],
+        cwd=package,
+        env=env,
+        log=log,
+    )
+    harness_log = output / "harness.jsonl"
+    run(
+        [
+            args.cargo,
+            "test",
+            "--locked",
+            "--test",
+            "cli",
+            "--no-run",
+            "--message-format=json",
+        ],
+        cwd=package,
+        env=env,
+        log=harness_log,
+    )
+    artifacts = []
+    for line in harness_log.read_text().splitlines():
+        if line.startswith("{"):
+            event = json.loads(line)
+            if (
+                event.get("reason") == "compiler-artifact"
+                and event["target"]["name"] == "cli"
+                and event.get("executable")
+            ):
+                artifacts.append(Path(event["executable"]))
+    assert len(artifacts) == 1, artifacts
+    cli_tests = artifacts[0]
     private_path = output / "runtime-bin"
     private_path.mkdir()
     for tool in ("sh", "sleep"):
@@ -261,8 +328,6 @@ def main():
         "PATH": str(private_path),
         "HOME": str(output / "runtime-home"),
         "GIT_EXEC_PATH": str(output / "git/libexec/git-core"),
-        "TEST_SRCDIR": str(args.runfiles_root),
-        "TEST_WORKSPACE": args.workspace,
         "POOL_INSTALLED_BINARY": str(binary),
     }
     (output / "runtime-home").mkdir()
@@ -277,10 +342,12 @@ def main():
     installed_version = subprocess.check_output(
         [binary, "--version"], cwd=unrelated, env=runtime, text=True
     ).strip()
-    assert installed_version == "worktree-pool 0.1.0", installed_version
+    assert installed_version == f"worktree-pool {original['package']['version']}", (
+        installed_version
+    )
     (output / "installed-version.log").write_text(installed_version + "\n")
     run(
-        [args.cli_tests, "--test-threads=1"],
+        [cli_tests, "--test-threads=1"],
         cwd=unrelated,
         env=runtime,
         log=output / "installed-cli.log",
@@ -292,7 +359,7 @@ def main():
                 "binary_sha256": digest(binary),
                 "absent_from_path": ["cargo", "rustc", "bazel"],
                 "cwd": str(unrelated),
-                "helper_scope": "Bazel test_support children; public CLI commands use Cargo-installed artifact",
+                "helper_scope": "Cargo crash-helper example; public CLI commands use Cargo-installed artifact",
             },
             indent=2,
         )

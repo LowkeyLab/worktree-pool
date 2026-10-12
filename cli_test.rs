@@ -27,13 +27,9 @@ impl Fixture {
     }
     fn command(&self) -> Command {
         // Installation acceptance supplies the real Cargo-installed artifact.
-        // Ordinary Bazel tests retain their existing binary and real adapters.
+        // Ordinary Cargo tests use the binary built for this integration target.
         let binary = env::var_os("POOL_INSTALLED_BINARY").map_or_else(
-            || {
-                PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-                    .join(env::var_os("TEST_WORKSPACE").unwrap())
-                    .join(env!("POOL_BINARY"))
-            },
+            || PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool")),
             PathBuf::from,
         );
         let mut command = Command::new(binary);
@@ -367,9 +363,10 @@ fn process_death_preserves_initialization_intent_commit_and_publication() {
         ("published", 0, true),
     ] {
         let fixture = Fixture::new();
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let mut command = fixture.command();
         let environments: Vec<_> = command
             .get_envs()
@@ -893,9 +890,10 @@ fn selectors_and_ambient_git_context_cannot_redirect_registered_effects() {
 impl Fixture {
     fn paused_refresh(&self, repository_id: &str, checkpoint: &str) -> Child {
         use std::io::{BufRead, BufReader};
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let command = self.command();
         let mut process = Command::new(binary);
         process.env_clear();
@@ -1790,9 +1788,10 @@ fn cached_git_observations_cannot_hide_protected_content_or_mode_changes() {
 impl Fixture {
     fn paused_acquire(&self, id: &str, checkpoint: &str, continuable: bool) -> Child {
         use std::io::{BufRead, BufReader};
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let environment = self.command();
         let mut command = Command::new(binary);
         command.env_clear();
@@ -2506,9 +2505,10 @@ fn clean_release_retains_ignored_files_and_reacquires_with_a_fresh_handle() {
 impl Fixture {
     fn paused_release(&self, handle: &str, checkpoint: &str, continuable: bool) -> Child {
         use std::io::{BufRead, BufReader};
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let environment = self.command();
         let mut command = Command::new(binary);
         command.env_clear();
@@ -3943,9 +3943,10 @@ fn every_public_inspection_preserves_catalog_bytes_as_well_as_history_and_checko
 impl Fixture {
     fn paused_recovery(&self, handle: &str, checkpoint: &str, continuable: bool) -> Child {
         use std::io::{BufRead, BufReader};
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let environment = self.command();
         let mut command = Command::new(binary);
         command.env_clear();
@@ -4190,9 +4191,10 @@ impl Fixture {
         operation_id: Option<&str>,
     ) -> Child {
         use std::io::{BufRead, BufReader};
-        let binary = PathBuf::from(env::var_os("TEST_SRCDIR").unwrap())
-            .join(env::var_os("TEST_WORKSPACE").unwrap())
-            .join(env!("CRASH_BINARY"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_worktree-pool"))
+            .parent()
+            .unwrap()
+            .join("examples/crash_helper");
         let environment = self.command();
         let mut command = Command::new(binary);
         command.env_clear();

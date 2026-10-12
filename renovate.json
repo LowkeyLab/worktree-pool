@@ -1,0 +1,49 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices", ":dependencyDashboard"],
+  "enabledManagers": ["cargo", "github-actions", "custom.regex", "nix"],
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "packageRules": [
+    {
+      "matchUpdateTypes": [
+        "patch",
+        "minor",
+        "digest",
+        "pin",
+        "lockFileMaintenance"
+      ],
+      "automerge": true
+    },
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchDatasources": ["rust"],
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "matchManagers": ["nix"],
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^rust-toolchain\\.toml$/"],
+      "matchStrings": [
+        "channel\\s*=\\s*\"(?<currentValue>\\d+\\.\\d+\\.\\d+)\""
+      ],
+      "depNameTemplate": "rust",
+      "datasourceTemplate": "rust",
+      "versioningTemplate": "semver"
+    }
+  ]
+}

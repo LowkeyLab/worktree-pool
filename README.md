@@ -22,7 +22,7 @@ worktree for a task, release it when finished, and reuse it for the next task.
 <!-- vale Google.Headings = YES -->
 
 Pooled worktrees can get you from starting a task to a finished build sooner.
-In 100 comparisons using a Rust/Bazel build in this repository, repeating a build
+In 100 historical comparisons using a Rust/Bazel build in the original monorepo, repeating a build
 or making a small edit took about half the time with pooled worktrees.
 
 These are median times from requesting a worktree to finishing the build:

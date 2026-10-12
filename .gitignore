@@ -1,0 +1,5 @@
+/target/
+/verification/
+/benchmark-results/
+__pycache__/
+*.pyc
