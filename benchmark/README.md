@@ -14,7 +14,8 @@ python3 benchmark/run.py \
 
 Use a quiet Linux x86-64 machine. One recorded warm-up prepares the retained
 cache. Both arms share the Cargo dependency cache; target directories remain
-separate. Pair order alternates. Each pair starts at the same commit and checks
+separate. Pair order alternates. Both arms refresh the same local origin/main.
+Each pair starts at the same commit and checks
 matching edited source bytes. Private edits are committed before release.
 
 `report.json` retains raw acquisition, preparation, build, total, and separate

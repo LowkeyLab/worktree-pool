@@ -131,6 +131,28 @@ class Runner:
                 checkout = path_from_receipt(assignment["path"])
                 sample["assignment_handle"] = assignment["assignment_handle"]
             else:
+                self.command(
+                    [
+                        "git",
+                        "-C",
+                        self.repo,
+                        "-c",
+                        "core.hooksPath=/dev/null",
+                        "-c",
+                        "core.fsync=objects,reference",
+                        "-c",
+                        "core.fsyncMethod=fsync",
+                        "fetch",
+                        "--no-prune",
+                        "--no-prune-tags",
+                        "--no-tags",
+                        "--no-recurse-submodules",
+                        "--no-auto-maintenance",
+                        "--no-write-fetch-head",
+                        "origin",
+                        "+refs/heads/main:refs/remotes/origin/main",
+                    ]
+                )
                 checkout = self.output / f"fresh-{workload}-{pair}"
                 self.command(
                     [
