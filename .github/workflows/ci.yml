@@ -35,6 +35,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked --release
       - run: python3 -m unittest discover -s benchmark -p '*_test.py'
+      - run: python3 -m unittest discover -s install -p '*_test.py'
   installation:
     name: Package and Git 2.36 acceptance
     runs-on: ubuntu-24.04

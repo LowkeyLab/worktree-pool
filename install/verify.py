@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the real standalone archive, locked source install and installed public CLI.
+"""Verify a standalone archive, locked source/registry install and installed CLI.
 
 Cargo builds the archive, crash helper, and integration harness. All build and
 runtime fixtures are private to the explicitly supplied new output directory.
@@ -56,9 +56,20 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--phase", choices=("package", "all"), default="all")
+    parser.add_argument(
+        "--archive", type=Path, help="Verify this exact release archive"
+    )
+    parser.add_argument(
+        "--registry-install",
+        action="store_true",
+        help="Install the exact archive version from crates.io, then run acceptance",
+    )
     args = parser.parse_args()
+    if args.registry_install and (args.archive is None or args.phase != "all"):
+        parser.error("--registry-install requires --archive and --phase all")
     if args.cargo is None or args.rustc is None:
         parser.error("Cargo and rustc must be available")
+    os.umask(0o077)
     output = args.output.resolve()
     output.mkdir(mode=0o700)  # Refuse accidental reuse or cleanup of caller data.
     log = output / "commands.log"
@@ -103,15 +114,19 @@ def main():
     assert "host: x86_64-unknown-linux-gnu\n" in rust, rust
     assert platform.system() == "Linux" and platform.machine() == "x86_64"
     (output / "toolchain.txt").write_text(rust + cargo)
-    if not (package / "Cargo.lock").exists():
-        run([args.cargo, "generate-lockfile"], cwd=package, env=env, log=log)
-    run(
-        [args.cargo, "package", "--locked", "--allow-dirty"],
-        cwd=package,
-        env=env,
-        log=log,
-    )
-    archive = next((output / "cargo-target/package").glob("*.crate"))
+    if args.archive is None:
+        if not (package / "Cargo.lock").exists():
+            run([args.cargo, "generate-lockfile"], cwd=package, env=env, log=log)
+        run(
+            [args.cargo, "package", "--locked", "--allow-dirty"],
+            cwd=package,
+            env=env,
+            log=log,
+        )
+        archive = next((output / "cargo-target/package").glob("*.crate"))
+    else:
+        archive = output / args.archive.name
+        shutil.copyfile(args.archive.resolve(), archive)
     unpacked = extract(archive, output / "extracted")
     contents = sorted(
         p.relative_to(unpacked).as_posix() for p in unpacked.rglob("*") if p.is_file()
@@ -127,6 +142,7 @@ def main():
         "CONTRIBUTING.md",
         "WIRE_SCHEMA.md",
         "DEPENDENCIES.md",
+        "CHANGELOG.md",
         "lib.rs",
         "main.rs",
         "test_support/main.rs",
@@ -216,13 +232,23 @@ def main():
     if args.phase == "package":
         print(f"Verified standalone archive: {archive}")
         return
+    install_source = (
+        [
+            "--registry",
+            "crates-io",
+            "--version",
+            "=" + original["package"]["version"],
+            "worktree-pool",
+        ]
+        if args.registry_install
+        else ["--path", unpacked]
+    )
     run(
         [
             args.cargo,
             "install",
             "--locked",
-            "--path",
-            unpacked,
+            *install_source,
             "--root",
             output / "installed",
         ],
@@ -355,6 +381,9 @@ def main():
     (output / "runtime.json").write_text(
         json.dumps(
             {
+                "installation_source": "crates.io"
+                if args.registry_install
+                else "verified archive",
                 "git": version,
                 "binary_sha256": digest(binary),
                 "absent_from_path": ["cargo", "rustc", "bazel"],

@@ -8,7 +8,7 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/LowkeyLab/worktree-pool"
 readme = "README.md"
 # Package the public sources and test helper; repository automation stays outside the crate.
-include = ["/*.rs", "/Cargo.lock", "/LICENSE", "/README.md", "/CONTRIBUTING.md", "/WIRE_SCHEMA.md", "/DEPENDENCIES.md", "/test_support/*.rs"]
+include = ["/*.rs", "/Cargo.lock", "/LICENSE", "/README.md", "/CONTRIBUTING.md", "/WIRE_SCHEMA.md", "/DEPENDENCIES.md", "/CHANGELOG.md", "/test_support/*.rs"]
 
 [lib]
 path = "lib.rs"
