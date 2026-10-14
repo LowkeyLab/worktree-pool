@@ -1,0 +1,128 @@
+name: Publish to crates.io
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: crates-io-publishing
+  cancel-in-progress: false
+jobs:
+  rust:
+    name: Release Rust (${{ matrix.toolchain }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: [minimum, stable]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Select toolchain
+        env:
+          SELECTED_TOOLCHAIN: ${{ matrix.toolchain }}
+        run: |
+          toolchain="$SELECTED_TOOLCHAIN"
+          if [ "$toolchain" = minimum ]; then
+            toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["rust-version"])')
+          fi
+          rustup toolchain install "$toolchain" --profile minimal --component rustfmt --component clippy
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - run: python3 -m unittest discover -s benchmark -p '*_test.py'
+      - run: python3 -m unittest discover -s install -p '*_test.py'
+  package:
+    name: Tagged package and Git 2.36 acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install pinned release Rust
+        run: |
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          rustup toolchain install "$toolchain" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+      - name: Prepare tagged archive
+        run: python3 install/release.py prepare --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/release"
+      - name: Accept exact archive
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 install/verify.py --archive "$RUNNER_TEMP/release/worktree-pool-$version.crate" --output "$RUNNER_TEMP/release/acceptance"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: verified-release
+          path: |
+            ${{ runner.temp }}/release/*.crate
+            ${{ runner.temp }}/release/*.json
+            ${{ runner.temp }}/release/*.log
+            ${{ runner.temp }}/release/acceptance/*.json
+            ${{ runner.temp }}/release/acceptance/*.jsonl
+            ${{ runner.temp }}/release/acceptance/*.log
+            ${{ runner.temp }}/release/acceptance/toolchain.txt
+          if-no-files-found: warn
+  publish:
+    name: Publish and verify registry installation
+    needs: [rust, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Install pinned release Rust
+        run: |
+          toolchain=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          rustup toolchain install "$toolchain" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: verified-release
+          path: ${{ runner.temp }}/release
+      - name: Check source, reproducibility, and existing version
+        id: release-check
+        run: |
+          python3 install/release.py check --tag "$RELEASE_TAG" --evidence "$RUNNER_TEMP/release" --output "$RUNNER_TEMP/pre-publish"
+          python3 -c 'import json,os; print("decision=" + json.load(open(os.path.join(os.environ["RUNNER_TEMP"], "pre-publish/state.json")))["decision"])' >> "$GITHUB_OUTPUT"
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        if: steps.release-check.outputs.decision == 'publish'
+        id: auth
+      - name: Upload new version
+        if: steps.release-check.outputs.decision == 'publish'
+        id: publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/pre-publish/cargo-target
+        run: cargo publish --locked --registry crates-io
+      - name: Verify published archive checksum
+        run: python3 install/release.py verify-registry --evidence "$RUNNER_TEMP/release" --output "$RUNNER_TEMP/registry-evidence"
+      - name: Accept registry-installed command
+        run: |
+          version="${RELEASE_TAG#v}"
+          python3 install/verify.py --archive "$RUNNER_TEMP/release/worktree-pool-$version.crate" --registry-install --output "$RUNNER_TEMP/registry-acceptance"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: always()
+        with:
+          name: publication-evidence
+          path: |
+            ${{ runner.temp }}/pre-publish/*.json
+            ${{ runner.temp }}/pre-publish/*.log
+            ${{ runner.temp }}/registry-evidence/*.json
+            ${{ runner.temp }}/registry-acceptance/*.json
+            ${{ runner.temp }}/registry-acceptance/*.jsonl
+            ${{ runner.temp }}/registry-acceptance/*.log
+            ${{ runner.temp }}/registry-acceptance/toolchain.txt
+          if-no-files-found: warn

@@ -26,8 +26,13 @@ repositories, and remotes. Package acceptance is described below.
 
 The package remains version 0.1.0, AGPL-3.0-only, with Linux x86-64 and Git 2.36+
 runtime support. See [command schemas](WIRE_SCHEMA.md) and the
-[dependency contract](DEPENDENCIES.md). Automated registry publication and binary
-releases are outside the repository migration.
+[dependency contract](DEPENDENCIES.md). Registry publication follows the
+[release guide](https://github.com/LowkeyLab/worktree-pool/blob/main/docs/releases.md).
+The CLI is the supported product; Rust library exports are implementation details
+without an API compatibility guarantee. During 0.x, patch releases preserve CLI
+compatibility and minor releases may introduce breaking CLI changes. JSON/event
+and catalog formats retain independent version contracts and preservation rules.
+Binary release uploads remain outside this setup.
 
 ## Catalog initialization
 
@@ -481,7 +486,7 @@ and a native linker/C toolchain. Runtime needs Git 2.36+ and the resulting nativ
 C runtime libraries. Execution never invokes Rust, Cargo or Bazel. Runtime verification establishes
 that these tools are absent from `PATH`. Installation
 is distinct from repository development commands. The package is ready for
-publication review. This work doesn't publish it. The maintainer must
+publication review. The publishing setup does not perform the first upload. The maintainer must
 verify name availability immediately before publication. A conflict requires
 maintainer resolution.
 

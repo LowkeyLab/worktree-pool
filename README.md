@@ -55,6 +55,18 @@ using Rust/Cargo 1.96+ and a native linker/C toolchain:
 cargo install --locked --path /path/to/worktree-pool-0.1.0
 ```
 
+After the first crates.io release is published, install its exact version with:
+
+```sh
+cargo install --locked --version 0.1.0 worktree-pool
+```
+
+The supported interface is the CLI; the shipped Rust library is an implementation
+detail without an API compatibility guarantee. See the
+[release guide](https://github.com/LowkeyLab/worktree-pool/blob/main/docs/releases.md)
+for publishing and compatibility policy. Version 0.1.0 has not yet been uploaded
+by this setup.
+
 ## Quick start
 
 Initialize the pool, register a repository, and acquire a worktree:
