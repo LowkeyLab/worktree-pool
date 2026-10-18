@@ -669,6 +669,39 @@ refresh returns the existing operation without retrying effects or changing
 history. Use explicit recovery after inspecting the recorded identity. Lost stdout doesn't
 undo a completed refresh. Inspect the recorded repository operations.
 
+Refresh failures now use `repository.refresh.failed.v1`. This event contains
+operation and repository identities plus a typed `diagnostic`. Its cause must
+identify the recorded refresh intent. The event uses the repository stream.
+The normal durable transaction commits the event, projection, stream revision,
+and identity index together. Git runs after the intent session closes.
+
+The diagnostic records category, stage, source and destination references,
+available Git exit status, and a controlled corrective instruction.
+`repository_validation` checks canonical common-directory identity. `fetch`
+requests `refs/heads/main` into `refs/remotes/origin/main`. `resolve_commit`
+reads the resulting remote-tracking reference. The fetch baseline stays fixed.
+Nonzero Git results use broad failure categories. The tool does not infer
+transport, authentication, or lock causes from stderr.
+
+Diagnostics contain no Git stdout, stderr, remote URLs, or credentials.
+Enums restrict reference names and instructions. Replay rejects inconsistent
+stage, category, instruction, reference, or exit-status combinations.
+Historical `repository.refresh.finished.v1` failures retain their original
+meaning. Reconstruction omits their missing diagnostics. Recovery retains new
+diagnostics and performs no fetch.
+
+Acquisition failures caused by a pending refresh include `repository_id` and
+`operation_id` in context, plus the durable operation in data. Uncertain refresh
+results retain these identities and preserve the underlying outcome and reason.
+Inspect the exact operation before another action. Explicit recovery remains
+necessary before acquisition can proceed.
+
+Direct decision tests check diagnostic structure and credential exclusion.
+Private real Git fixtures check missing branches, transport failures, and
+reference locks. Private storage tests check causal refusal, unchanged history,
+stream revisions, and reconstruction. A public CLI test checks failure output,
+exact operation inspection, rebuild, and recovery without a fetch.
+
 ### Acquire persistent worktrees
 
 ```text

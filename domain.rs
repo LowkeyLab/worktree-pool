@@ -206,6 +206,7 @@ pub fn decode_event(value: &Value, catalog_id: CatalogId) -> Result<DomainEvent,
                     | "io.lowkeylab.worktreepool.worktree.registered.v2"
                     | "io.lowkeylab.worktreepool.repository.refresh.started.v1"
                     | "io.lowkeylab.worktreepool.repository.refresh.finished.v1"
+                    | "io.lowkeylab.worktreepool.repository.refresh.failed.v1"
                     | "io.lowkeylab.worktreepool.worktree.withheld.v1"
                     | "io.lowkeylab.worktreepool.assignment.reserved.v1"
                     | "io.lowkeylab.worktreepool.worktree.preservation.intended.v1"
@@ -261,6 +262,7 @@ pub fn decode_event(value: &Value, catalog_id: CatalogId) -> Result<DomainEvent,
         if matches!(
             event,
             crate::management::ManagementEvent::RefreshFinished(_)
+                | crate::management::ManagementEvent::RefreshFailed(_)
         ) && causation_id.as_ref().is_none_or(|id| {
             !Uuid::parse_str(id).is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == *id)
         }) {

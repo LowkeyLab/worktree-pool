@@ -95,6 +95,28 @@ When finished, commit your changes and release the returned assignment handle:
 worktree-pool release <assignment-handle>
 ```
 
+If a refresh fails, JSON output includes the repository ID and exact refresh
+operation ID. Inspect that operation after the command exits:
+
+```sh
+worktree-pool --json operation inspect <operation-id>
+worktree-pool recover preview --operation <operation-id>
+```
+
+Inspection retains the failure category, stage, reference names, available Git
+exit status, and a corrective instruction. Diagnostics exclude credentials,
+remote URLs, and raw Git stderr. Historical operations can lack diagnostics.
+A catalog rebuild preserves this distinction.
+
+Correct the reported problem before explicit recovery:
+
+```sh
+worktree-pool recover apply --operation <operation-id>
+```
+
+Recovery does not fetch or prove freshness from local references.
+Acquisition remains blocked until explicit recovery completes.
+
 Use `worktree-pool --help` to explore the commands.
 
 ## Further reading

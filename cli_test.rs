@@ -1132,6 +1132,19 @@ fn refresh_missing_main_transport_and_ref_write_failures_preserve_existing_state
         let result = fixture.json(&["repo", "refresh", "--repo", id]);
         assert_that!(result["outcome"].as_str(), eq(Some("pending")));
         assert_that!(result["reason_code"].as_str(), eq(Some("refresh_failed")));
+        let operation_id = result["context"]["operation_id"].as_str().unwrap();
+        let inspected = fixture.json(&["operation", "inspect", operation_id]);
+        let diagnostic = &inspected["data"]["operation"]["diagnostic"];
+        assert_that!(diagnostic["category"].as_str(), eq(Some("git_failed")));
+        assert_that!(diagnostic["stage"].as_str(), eq(Some("fetch")));
+        assert_that!(
+            diagnostic["git_exit_status"].as_i64().unwrap() > 0,
+            eq(true)
+        );
+        assert_that!(
+            &inspected["data"]["operation"],
+            eq(&result["data"]["operation"])
+        );
         assert_that!(
             fixture
                 .git_stdout(&checkout, &["rev-parse", "refs/remotes/origin/main"])
@@ -7173,5 +7186,74 @@ fn canonical_crlf_release_accepts_a_clean_conversion_after_acquisition() {
     assert_that!(
         fs::read(checkout.join("tracked")).unwrap().as_slice(),
         eq(b"protected checkout\r\n".as_slice())
+    );
+}
+
+#[googletest::test]
+fn failed_acquisition_retains_exact_refresh_diagnostics_through_rebuild_and_recovery() {
+    let fixture = Fixture::new();
+    let (_, checkout, id) = fixture.acquisition();
+    fixture.git(
+        &checkout,
+        &[
+            "remote".as_ref(),
+            "set-url".as_ref(),
+            "origin".as_ref(),
+            fixture.root.path().join("missing-remote").as_os_str(),
+        ],
+    );
+    let failed = fixture.json(&["acquire", "--repo", &id]);
+    assert_that!(failed["outcome"].as_str(), eq(Some("pending")));
+    assert_that!(
+        failed["context"]["repository_id"].as_str(),
+        eq(Some(id.as_str()))
+    );
+    let operation = failed["context"]["operation_id"].as_str().unwrap();
+    let inspect = fixture.json(&["operation", "inspect", operation]);
+    let diagnostic = &inspect["data"]["operation"]["diagnostic"];
+    assert_that!(diagnostic["category"].as_str(), eq(Some("git_failed")));
+    assert_that!(diagnostic["stage"].as_str(), eq(Some("fetch")));
+    assert_that!(
+        diagnostic["source_reference"].as_str(),
+        eq(Some("refs/heads/main"))
+    );
+    assert_that!(
+        diagnostic["destination_reference"].as_str(),
+        eq(Some("refs/remotes/origin/main"))
+    );
+    assert_that!(diagnostic["git_exit_status"].as_i64(), eq(Some(128)));
+    assert_that!(
+        diagnostic["next_action"].as_str().unwrap().is_empty(),
+        eq(false)
+    );
+    assert_that!(inspect.to_string().contains("missing-remote"), eq(false));
+    assert_that!(
+        fixture.json(&["acquire", "--repo", &id])["context"]["operation_id"].as_str(),
+        eq(Some(operation))
+    );
+    let history = fixture.json(&["events", "list"]);
+    assert_that!(
+        fixture.json(&["catalog", "rebuild"])["outcome"].as_str(),
+        eq(Some("completed"))
+    );
+    assert_that!(
+        fixture.json(&["operation", "inspect", operation]),
+        eq(&inspect)
+    );
+    assert_that!(fixture.json(&["events", "list"]), eq(&history));
+    let before = fixture.git_text(&checkout, &["rev-parse", "refs/remotes/origin/main"]);
+    let recovered = fixture.json(&["recover", "apply", "--operation", operation]);
+    assert_that!(recovered["outcome"].as_str(), eq(Some("completed")));
+    assert_that!(
+        recovered["data"]["fresh_fetch_proven"].as_bool(),
+        eq(Some(false))
+    );
+    assert_that!(
+        fixture.git_text(&checkout, &["rev-parse", "refs/remotes/origin/main"]),
+        eq(&before)
+    );
+    assert_that!(
+        &fixture.json(&["operation", "inspect", operation])["data"]["operation"]["diagnostic"],
+        eq(diagnostic)
     );
 }

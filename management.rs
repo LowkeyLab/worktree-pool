@@ -98,6 +98,8 @@ pub struct RefreshOperation {
     pub last_checkpoint: String,
     pub intent_event_id: String,
     pub resolved_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<crate::refresh::RefreshDiagnostic>,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -111,6 +113,13 @@ pub struct RefreshFinished {
     pub operation_id: OperationId,
     pub repository_id: RepositoryId,
     pub resolved_commit: Option<String>,
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshFailed {
+    pub operation_id: OperationId,
+    pub repository_id: RepositoryId,
+    pub diagnostic: crate::refresh::RefreshDiagnostic,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -137,6 +146,7 @@ pub enum ManagementEvent {
     WorktreeEnrolled(Worktree),
     RefreshStarted(RefreshStarted),
     RefreshFinished(RefreshFinished),
+    RefreshFailed(RefreshFailed),
 }
 impl ManagementEvent {
     #[must_use]
@@ -158,6 +168,7 @@ impl ManagementEvent {
             Self::WorktreeEnrolled(_) => "io.lowkeylab.worktreepool.worktree.registered.v2",
             Self::RefreshStarted(_) => "io.lowkeylab.worktreepool.repository.refresh.started.v1",
             Self::RefreshFinished(_) => "io.lowkeylab.worktreepool.repository.refresh.finished.v1",
+            Self::RefreshFailed(_) => "io.lowkeylab.worktreepool.repository.refresh.failed.v1",
         }
     }
     #[must_use]
@@ -177,6 +188,7 @@ impl ManagementEvent {
             Self::Acquisition(a) => Some(a.repository_id()),
             Self::RefreshStarted(r) => Some(r.repository_id),
             Self::RefreshFinished(r) => Some(r.repository_id),
+            Self::RefreshFailed(r) => Some(r.repository_id),
         }
     }
     #[must_use]
@@ -191,6 +203,7 @@ impl ManagementEvent {
             Self::Acquisition(a) => Some(a.operation_id()),
             Self::RefreshStarted(r) => Some(r.operation_id),
             Self::RefreshFinished(r) => Some(r.operation_id),
+            Self::RefreshFailed(r) => Some(r.operation_id),
             _ => None,
         }
     }
@@ -214,6 +227,7 @@ impl ManagementEvent {
             }
             Self::RefreshStarted(r) => format!("repositories/{}", r.repository_id),
             Self::RefreshFinished(r) => format!("repositories/{}", r.repository_id),
+            Self::RefreshFailed(r) => format!("repositories/{}", r.repository_id),
         }
     }
     /// Apply an enrollment fact without filesystem or Git effects.
@@ -268,7 +282,27 @@ impl ManagementEvent {
                     last_checkpoint: "intent_recorded".into(),
                     intent_event_id: event_id.into(),
                     resolved_commit: None,
+                    diagnostic: None,
                 });
+            }
+            Self::RefreshFailed(failed) => {
+                failed.diagnostic.validate()?;
+                let operation = state
+                    .operations
+                    .iter_mut()
+                    .find(|o| {
+                        o.operation_id == failed.operation_id
+                            && o.repository_id == failed.repository_id
+                    })
+                    .ok_or(PoolError::Corrupt)?;
+                if operation.state != RefreshState::Pending
+                    || causation_id != Some(operation.intent_event_id.as_str())
+                {
+                    return Err(PoolError::Conflict);
+                }
+                operation.state = RefreshState::NeedsReconciliation;
+                operation.last_checkpoint = "fetch_failed".into();
+                operation.diagnostic = Some(failed.diagnostic.clone());
             }
             Self::RefreshFinished(finished) => {
                 if finished.resolved_commit.as_ref().is_some_and(|oid| {
