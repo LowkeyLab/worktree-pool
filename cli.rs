@@ -161,24 +161,42 @@ pub struct Envelope {
 impl Envelope {
     #[must_use]
     pub fn failure(command: String, error: &PoolError) -> Self {
+        if let PoolError::RefreshResult {
+            repository_id,
+            operation_id,
+            source,
+        } = error
+        {
+            let mut receipt = Self::failure(command, source);
+            receipt.context = json!({"repository_id": repository_id, "operation_id": operation_id});
+            receipt.data = json!({"next_action": error.to_string()});
+            return receipt;
+        }
         Self {
             schema_version: 1,
             command,
             outcome: match error {
-                PoolError::Pending | PoolError::RelocationPending | PoolError::OperationPending => {
-                    "pending"
-                }
+                PoolError::Pending
+                | PoolError::RelocationPending
+                | PoolError::OperationPending
+                | PoolError::RefreshPending { .. } => "pending",
                 PoolError::CommitUnknown => "unknown",
                 _ => "rejected",
             },
             reason_code: error.reason_code(),
             context: match error {
+                PoolError::RefreshPending { operation } => {
+                    json!({"repository_id": operation.repository_id, "operation_id": operation.operation_id})
+                }
                 PoolError::PoolExhausted { repository_id, .. } => {
                     json!({"repository_id":repository_id})
                 }
                 _ => json!({}),
             },
             data: match error {
+                PoolError::RefreshPending { operation } => {
+                    json!({"operation": operation, "next_action": error.to_string()})
+                }
                 PoolError::PoolExhausted {
                     maximum,
                     registered_count,

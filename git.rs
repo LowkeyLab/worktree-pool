@@ -63,8 +63,10 @@ fn observe_path(path: &Path, argument: &str) -> Result<PathBuf, PoolError> {
     if !output.status.success() || output.stdout.last() != Some(&b'\n') {
         return Err(PoolError::Git);
     }
-    let mut bytes = output.stdout;
-    bytes.pop();
+    parse_observed_path(&output.stdout)
+}
+fn parse_observed_path(stdout: &[u8]) -> Result<PathBuf, PoolError> {
+    let bytes = stdout.strip_suffix(b"\n").ok_or(PoolError::Git)?.to_vec();
     if bytes.is_empty() || bytes.contains(&0) {
         return Err(PoolError::Git);
     }
@@ -84,12 +86,52 @@ pub fn checkout(path: &Path) -> Result<Checkout, PoolError> {
 /// Refreshes only the recorded canonical common-directory identity.
 /// # Errors
 /// Refuses substituted/missing contexts and failed Git effects without stale fallback.
-pub fn refresh_origin_main(common_directory: &Path) -> Result<String, PoolError> {
-    ensure_common_directory(common_directory)?;
-    if !fetch(common_directory)?.status.success() {
-        return Err(PoolError::Git);
+pub fn refresh_origin_main(
+    common_directory: &Path,
+) -> Result<String, crate::refresh::RefreshDiagnostic> {
+    use crate::refresh::{
+        FailureCategory as Category, RefreshDiagnostic as Diagnostic, RefreshStage as Stage,
+    };
+    let context = command(common_directory)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .map_err(|_| {
+            Diagnostic::new(
+                Stage::RepositoryValidation,
+                Category::CommandUnavailable,
+                None,
+            )
+        })?;
+    if !context.status.success() {
+        return Err(Diagnostic::git_failure(
+            Stage::RepositoryValidation,
+            &context,
+        ));
     }
-    origin_main(common_directory)
+    if parse_observed_path(&context.stdout).ok().as_deref() != Some(common_directory) {
+        return Err(Diagnostic::new(
+            Stage::RepositoryValidation,
+            Category::RepositoryUnavailable,
+            context.status.code(),
+        ));
+    }
+    let output = fetch(common_directory)
+        .map_err(|_| Diagnostic::new(Stage::Fetch, Category::CommandUnavailable, None))?;
+    if !output.status.success() {
+        return Err(Diagnostic::git_failure(Stage::Fetch, &output));
+    }
+    let output = origin_main_output(common_directory)
+        .map_err(|_| Diagnostic::new(Stage::ResolveCommit, Category::CommandUnavailable, None))?;
+    if !output.status.success() {
+        return Err(Diagnostic::git_failure(Stage::ResolveCommit, &output));
+    }
+    parse_origin_main(&output.stdout).map_err(|_| {
+        Diagnostic::new(
+            Stage::ResolveCommit,
+            Category::InvalidCommit,
+            output.status.code(),
+        )
+    })
 }
 /// Resolves a local reference only within the recorded canonical repository.
 /// # Errors
@@ -136,8 +178,8 @@ fn fetch(path: &Path) -> Result<Output, PoolError> {
 
 /// # Errors
 /// Requires an existing full commit; malformed or failed resolution is uncertainty.
-fn origin_main(path: &Path) -> Result<String, PoolError> {
-    let output = command(path)
+fn origin_main_output(path: &Path) -> Result<Output, PoolError> {
+    command(path)
         .args([
             "rev-parse",
             "--verify",
@@ -145,11 +187,11 @@ fn origin_main(path: &Path) -> Result<String, PoolError> {
             "refs/remotes/origin/main^{commit}",
         ])
         .output()
-        .map_err(|_| PoolError::Git)?;
-    if !output.status.success() {
-        return Err(PoolError::Git);
-    }
-    let oid = output.stdout.strip_suffix(b"\n").ok_or(PoolError::Git)?;
+        .map_err(|_| PoolError::Git)
+}
+
+fn parse_origin_main(stdout: &[u8]) -> Result<String, PoolError> {
+    let oid = stdout.strip_suffix(b"\n").ok_or(PoolError::Git)?;
     if !matches!(oid.len(), 40 | 64)
         || !oid
             .iter()

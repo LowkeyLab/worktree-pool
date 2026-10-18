@@ -196,8 +196,13 @@ pub(crate) fn refresh_locked(
     repo: &Repository,
     mut observe: impl FnMut(RefreshCheckpoint),
 ) -> Result<(CatalogProjection, crate::management::RefreshOperation), PoolError> {
-    use crate::management::{OperationId, RefreshFinished, RefreshStarted};
+    use crate::management::{OperationId, RefreshFailed, RefreshFinished, RefreshStarted};
     let operation_id = OperationId::new();
+    let contextualize = |source| PoolError::RefreshResult {
+        repository_id: repo.repository_id,
+        operation_id,
+        source: Box::new(source),
+    };
     let intent_event_id;
     {
         let session = catalog::open(paths)?;
@@ -221,42 +226,53 @@ pub(crate) fn refresh_locked(
             }),
         )?;
         intent_event_id = event["id"].as_str().ok_or(PoolError::Corrupt)?.to_owned();
-        session.store().append(
-            decode_event(&event, session.projection.catalog_id)?
-                .expected_revision(&session.projection)?,
-            event,
-        )?;
+        session
+            .store()
+            .append(
+                decode_event(&event, session.projection.catalog_id)?
+                    .expected_revision(&session.projection)?,
+                event,
+            )
+            .map_err(|error| error.refresh_intent_context(repo.repository_id, operation_id))?;
     }
-    observe(RefreshCheckpoint::IntentRecorded);
-    // No catalog handle/lock remains across a Git subprocess. std's lock FDs are close-on-exec.
-    let path = repo.common_directory.to_path()?;
-    let resolved_commit = git::refresh_origin_main(&path).ok();
-    observe(RefreshCheckpoint::FetchObserved);
-    let state = {
-        let session = catalog::open(paths)?;
-        let event = management_event_caused_by(
-            session.projection.catalog_id,
-            &ManagementEvent::RefreshFinished(RefreshFinished {
-                operation_id,
-                repository_id: repo.repository_id,
-                resolved_commit,
-            }),
-            &intent_event_id,
-        )?;
-        session.store().append(
-            decode_event(&event, session.projection.catalog_id)?
-                .expected_revision(&session.projection)?,
-            event,
-        )?
-    };
-    observe(RefreshCheckpoint::ResultCommitted);
-    let operation = state
-        .operations
-        .iter()
-        .find(|o| o.operation_id == operation_id)
-        .cloned()
-        .ok_or(PoolError::Corrupt)?;
-    Ok((state, operation))
+    (|| {
+        observe(RefreshCheckpoint::IntentRecorded);
+        // No catalog handle/lock remains across a Git subprocess. std's lock FDs are close-on-exec.
+        let path = repo.common_directory.to_path()?;
+        let result = git::refresh_origin_main(&path);
+        observe(RefreshCheckpoint::FetchObserved);
+        let state = {
+            let session = catalog::open(paths)?;
+            let fact = match result {
+                Ok(commit) => ManagementEvent::RefreshFinished(RefreshFinished {
+                    operation_id,
+                    repository_id: repo.repository_id,
+                    resolved_commit: Some(commit),
+                }),
+                Err(diagnostic) => ManagementEvent::RefreshFailed(RefreshFailed {
+                    operation_id,
+                    repository_id: repo.repository_id,
+                    diagnostic,
+                }),
+            };
+            let event =
+                management_event_caused_by(session.projection.catalog_id, &fact, &intent_event_id)?;
+            session.store().append(
+                decode_event(&event, session.projection.catalog_id)?
+                    .expected_revision(&session.projection)?,
+                event,
+            )?
+        };
+        observe(RefreshCheckpoint::ResultCommitted);
+        let operation = state
+            .operations
+            .iter()
+            .find(|o| o.operation_id == operation_id)
+            .cloned()
+            .ok_or(PoolError::Corrupt)?;
+        Ok((state, operation))
+    })()
+    .map_err(contextualize)
 }
 
 /// Changes durable capacity without removing or hiding registered records.

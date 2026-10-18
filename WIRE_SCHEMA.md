@@ -10,6 +10,7 @@ Types and nullable/omitted alternatives describe actual version-1 receipts.
 - Exit 0 completed. 2 rejected. 3 pending. 4 unknown. Broken result write returns 4 and direct stderr `result_output_failed`. A committed operation isn't undone. Help/version exit 0 use clap display output, not the envelope. Malformed `JSON`-mode arguments use command `parse`, rejected/`invalid_arguments`, context `{}`, data `{next_action}`.
 - `UUID` identity newtypes serialize as canonical lowercase non-nil `UUID` strings (`management.rs:12` identity macro, `domain.rs:18` `CatalogId`). Native persisted paths are `EncodedPath`: `{encoding:"unix-bytes",bytes:[u8...],display:string}`. Bytes authoritative, display informational. Persisted paths absolute. Encoding other than unix-bytes or embedded `NUL` rejected. Configuration path strings must be UTF-8. Commit/tip fields are hexadecimal object-ID strings (40 or 64 characters when validated), branch/reference/checkpoint fields strings.
 - `Option<T>` becomes `null` unless explicitly skipped. Context keys aren't universally mandatory. Handler indexing missing data fields can intentionally populate context with null. Catalog IDs in failure observation can also be null.
+- Refresh acquisition failure context `{repository_id,operation_id}`, data `{operation:RefreshOperation,next_action}` with pending/`operation_pending`. An uncertain refresh result uses the same identity context, data `{next_action}`, and the underlying outcome/reason. No assignment exists for these refresh failures.
 - Generic failure context `{}` and data `{next_action:string}`. `PoolExhausted` context `{repository_id}`, data `{maximum:u32,registered_count:usize,assigned_count:usize,next_action}`. Ordinary reasons map to rejected except `initialization_pending`/`catalog_relocation_pending`/`operation_pending` -> pending and `commit_unknown` -> unknown.
 - `augment_catalog_receipt` adds important alternatives: pending/unknown catalog results or any `catalog_relocation_pending` result without `data.authority` receive context `{catalog_id,catalog_path,selected_catalog_path}` and **flattened `AuthorityObservation` fields in data**, plus `catalog_mutations_available`/`worktrees_moved`/`next_action`. `catalog_conflict` can add observed active context paths plus **nested** `data.authority`. Observation failure leaves the generic failure. Authority nesting depends on the observed variant.
 - Diagnostic warning vocabulary presently only `diagnostic_listener_failed`. Warnings don't change outcome/reason/exit. Startup diagnostics sanitize direct stderr. `CommandObserved` stderr `JSON` fields command/outcome/`reason_code`/`catalog_id`?/revision? are diagnostic output, not another stdout result.
@@ -71,7 +72,7 @@ All fields below present unless noted. Types `?` mean `JSON` null. Numbers are `
 - Current `WV` W + `registration_state`,resources:`WorktreeUsage`,ownership,`assignment_handle`:`UUID`?,availability,`withheld_reason`:string?,creation:`CreationOperation`?,`pending_work`:O[]. Retired `WV` W + `registration_state`:`"retired"`,ownership:`"unassigned"`,availability:`"retired"`,retirement:`RetirementOperation`,resources:`RetiredUsage`. **doesn't add** `assignment_handle`/`withheld_reason`/creation/`pending_work`.
 - A: `assignment_handle`,`operation_id`,`repository_id`,`worktree_id`,path:P,`resolved_commit`,branch:string?,state:`AssignmentState`.
 - `WithheldWorktree`: `repository_id`,`worktree_id`,reason:string.
-- `RefreshOperation`: `operation_id`,`repository_id`,state,`last_checkpoint`,`intent_event_id`,`resolved_commit`:string?.
+- `RefreshOperation`: `operation_id`,`repository_id`,state,`last_checkpoint`,`intent_event_id`,`resolved_commit`:string?, `diagnostic`?:`RefreshDiagnostic` (**omitted** when unavailable).
 - `AcquisitionOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,state,`intent_event_id`,`last_checkpoint`,`preservation_tip`:string?,`preservation_reference`:string?.
 - `ReleaseOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,state,tip,branch:string?,`preservation_reference`:string?,`intent_event_id`,`last_checkpoint`.
 - `CreationOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,`acquisition_operation_id`,state,`last_checkpoint`,`intent_event_id`.
@@ -134,3 +135,43 @@ Type suffixes all prefixed `io.lowkeylab.worktreepool.`. Outer kind -> record:
 - Outer `repository_recovery`: `repository.recovery.started.v1` started:`RepositoryRecoveryOperation`. `repository.recovery.finished.v1` finished:{`operation_id`,`repository_id`,`target_operation_id`,`observed_commit`?}.
 - Outer retirement: `worktree.retirement.started.v1` started:`RetirementOperation`. `worktree.retirement.finished.v1` finished:{`operation_id`,`repository_id`,`worktree_id`}.
 - Outer relocation: `catalog.relocation.started.v1` started:`RelocationIntent`. `catalog.relocation.completed.v1` completed:{`operation_id`,`catalog_id`}.
+
+## Refresh failure diagnostics
+
+`repository.refresh.failed.v1` uses outer kind `refresh_failed`. Its record is
+`{operation_id,repository_id,diagnostic:RefreshDiagnostic}`. The subject is
+`repositories/<repository-id>`. The operation extension identifies the refresh.
+The required `causationid` identifies its `repository.refresh.started.v1` event.
+This fact advances the repository stream and atomically records
+`needs_reconciliation`/`fetch_failed` with no resolved commit.
+
+`RefreshDiagnostic` contains all these fields:
+
+| Field | Values |
+| --- | --- |
+| `category` | `repository_unavailable`, `command_unavailable`, `git_failed`, `invalid_commit` |
+| `stage` | `repository_validation`, `fetch`, `resolve_commit` |
+| `source_reference` | `null`, `refs/heads/main`, `refs/remotes/origin/main` |
+| `destination_reference` | `null`, `refs/remotes/origin/main` |
+| `git_exit_status` | integer 0 through 255, or `null` when unavailable |
+| `next_action` | one controlled instruction below |
+
+Repository validation has null references. Fetch uses source `refs/heads/main`
+and destination `refs/remotes/origin/main`. Commit resolution uses source
+`refs/remotes/origin/main` and a null destination. `command_unavailable` has a
+null exit status. `git_failed` has a nonzero status, or null after signal death.
+`invalid_commit` requires `resolve_commit` and status zero.
+`repository_unavailable` requires `repository_validation`.
+
+The exact controlled instructions are:
+
+- `repository_unavailable`: "Check the registered repository. Inspect this operation before explicit recovery."
+- `command_unavailable`: "Check Git installation and execution permissions. Inspect this operation before explicit recovery."
+- Fetch `git_failed`: "Check origin access, the main branch, and destination reference locks. Inspect this operation before explicit recovery."
+- Commit resolution `git_failed` or `invalid_commit`: "Check the origin/main commit and local object storage. Inspect this operation before explicit recovery."
+
+New failures retain this diagnostic through inspection, rebuild, and recovery.
+Success and historical failures omit `diagnostic`. Historical finished events
+remain unchanged. Reconstruction invents no diagnostics. Recovery performs no
+fetch and reports `fresh_fetch_proven:false`. Pending refreshes block acquisition.
+No diagnostic contains Git stdout, stderr, remote URLs, or credentials.

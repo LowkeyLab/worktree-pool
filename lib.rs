@@ -52,3 +52,8 @@ pub mod retirement;
 pub mod retirement_workflow;
 
 pub mod resources;
+
+pub mod refresh;
+
+#[cfg(test)]
+mod refresh_tests;

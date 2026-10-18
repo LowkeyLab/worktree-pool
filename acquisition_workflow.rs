@@ -56,6 +56,15 @@ pub fn acquire_observed(
         true,
     )?;
     let state = catalog::open(paths)?.projection;
+    if let Some(operation) = state
+        .operations
+        .iter()
+        .find(|o| o.repository_id == repo.repository_id && o.state.is_pending())
+    {
+        return Err(PoolError::RefreshPending {
+            operation: Box::new(operation.clone()),
+        });
+    }
     if state
         .acquisitions
         .iter()
@@ -73,13 +82,6 @@ pub fn acquire_observed(
     if state.has_pending_recovery(repo.repository_id) {
         return Err(PoolError::OperationPending);
     }
-    if state
-        .operations
-        .iter()
-        .any(|o| o.repository_id == repo.repository_id && o.state.is_pending())
-    {
-        return Err(PoolError::OperationPending);
-    }
     let common = repo.common_directory.to_path()?;
     let (state, target) = if let Some(reference) = reference {
         let target = git::resolve_repository_commit(&common, reference)?;
@@ -87,7 +89,9 @@ pub fn acquire_observed(
     } else {
         let (state, refresh) = workflows::refresh_locked(paths, &repo, |_| {})?;
         if refresh.state != crate::management::RefreshState::Completed {
-            return Err(PoolError::OperationPending);
+            return Err(PoolError::RefreshPending {
+                operation: Box::new(refresh),
+            });
         }
         observe(AcquisitionCheckpoint::RefreshCommitted);
         (state, refresh.resolved_commit.ok_or(PoolError::Corrupt)?)

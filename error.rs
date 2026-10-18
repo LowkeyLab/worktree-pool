@@ -1,5 +1,15 @@
 #[derive(Debug, thiserror::Error)]
 pub enum PoolError {
+    #[error("Refresh did not complete. Inspect the recorded operation before further action.")]
+    RefreshResult {
+        repository_id: crate::management::RepositoryId,
+        operation_id: crate::management::OperationId,
+        source: Box<PoolError>,
+    },
+    #[error("Refresh is pending. Inspect the recorded operation before explicit recovery.")]
+    RefreshPending {
+        operation: Box<crate::management::RefreshOperation>,
+    },
     #[error(
         "retirement requires human removal, latest safe reconciliation, no current owner and verified preservation; restore missing work before reconciliation when necessary"
     )]
@@ -75,9 +85,26 @@ pub enum PoolError {
     Permissions,
 }
 impl PoolError {
+    // A rejected intent creates no operation. An uncertain commit can contain it.
+    pub(crate) fn refresh_intent_context(
+        self,
+        repository_id: crate::management::RepositoryId,
+        operation_id: crate::management::OperationId,
+    ) -> Self {
+        if matches!(self, Self::CommitUnknown) {
+            Self::RefreshResult {
+                repository_id,
+                operation_id,
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
     #[must_use]
     pub const fn reason_code(&self) -> &'static str {
         match self {
+            Self::RefreshResult { source, .. } => source.reason_code(),
             Self::RetirementUnsafe => "retirement_preconditions_unmet",
             Self::PoolExhausted { maximum: 0, .. } => "capacity_zero",
             Self::PoolExhausted {
@@ -94,7 +121,7 @@ impl PoolError {
             Self::RetainedCollision => "retained_file_collision",
             Self::Unavailable => "worktree_unavailable",
             Self::Git => "git_failed",
-            Self::OperationPending => "operation_pending",
+            Self::OperationPending | Self::RefreshPending { .. } => "operation_pending",
             Self::Unregistered => "resource_unregistered",
             Self::Selectors => "selector_conflict",
             Self::Capacity => "capacity_exhausted",
