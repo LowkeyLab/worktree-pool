@@ -233,7 +233,7 @@ pub(crate) fn refresh_locked(
                     .expected_revision(&session.projection)?,
                 event,
             )
-            .map_err(contextualize)?;
+            .map_err(|error| error.refresh_intent_context(repo.repository_id, operation_id))?;
     }
     (|| {
         observe(RefreshCheckpoint::IntentRecorded);

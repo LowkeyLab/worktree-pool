@@ -213,3 +213,35 @@ fn refresh_failure_facts_validate_causes_and_rebuild_without_inventing_history()
         assert_that!(reopened.projection().unwrap(), eq(&state));
     }
 }
+
+#[googletest::test]
+fn rejected_refresh_intent_does_not_report_an_unrecorded_operation() {
+    let repository_id = crate::management::RepositoryId::new();
+    let operation_id = crate::management::OperationId::new();
+    for source in [
+        crate::error::PoolError::Storage,
+        crate::error::PoolError::Conflict,
+    ] {
+        let reason = source.reason_code();
+        let error = source.refresh_intent_context(repository_id, operation_id);
+        let receipt = crate::cli::Envelope::failure("acquire".into(), &error);
+        assert_that!(receipt.outcome, eq("rejected"));
+        assert_that!(receipt.reason_code, eq(reason));
+        assert_that!(receipt.context, eq(&serde_json::json!({})));
+        assert_that!(
+            receipt.data["next_action"]
+                .as_str()
+                .unwrap()
+                .contains("recorded operation"),
+            eq(false)
+        );
+    }
+    let error =
+        crate::error::PoolError::CommitUnknown.refresh_intent_context(repository_id, operation_id);
+    let receipt = crate::cli::Envelope::failure("acquire".into(), &error);
+    assert_that!(receipt.outcome, eq("unknown"));
+    assert_that!(
+        receipt.context["operation_id"].as_str(),
+        eq(Some(operation_id.to_string().as_str()))
+    );
+}

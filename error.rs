@@ -85,6 +85,22 @@ pub enum PoolError {
     Permissions,
 }
 impl PoolError {
+    // A rejected intent creates no operation. An uncertain commit can contain it.
+    pub(crate) fn refresh_intent_context(
+        self,
+        repository_id: crate::management::RepositoryId,
+        operation_id: crate::management::OperationId,
+    ) -> Self {
+        if matches!(self, Self::CommitUnknown) {
+            Self::RefreshResult {
+                repository_id,
+                operation_id,
+                source: Box::new(self),
+            }
+        } else {
+            self
+        }
+    }
     #[must_use]
     pub const fn reason_code(&self) -> &'static str {
         match self {
