@@ -6,7 +6,7 @@ worktree for a task, release it when finished, and reuse it for the next task.
 ## Features
 
 - Reuse existing worktrees or create new ones as needed.
-- Start work from `origin/main` or a chosen Git revision.
+- Start work from the default branch on `origin` or a chosen Git revision.
 - Keep ignored files and build artifacts between tasks.
 - Track assignments and inspect registered repositories and worktrees.
 - Set a worktree limit for each repository.
@@ -52,19 +52,19 @@ Supports Linux x86-64 with Git 2.36+. Install from an extracted source package
 using Rust/Cargo 1.96+ and a native linker/C toolchain:
 
 ```sh
-cargo install --locked --path /path/to/worktree-pool-0.1.0
+cargo install --locked --path /path/to/worktree-pool-0.2.0
 ```
 
 After the first crates.io release is published, install its exact version with:
 
 ```sh
-cargo install --locked --version 0.1.0 worktree-pool
+cargo install --locked --version 0.2.0 worktree-pool
 ```
 
 The supported interface is the CLI; the shipped Rust library is an implementation
 detail without an API compatibility guarantee. See the
 [release guide](https://github.com/LowkeyLab/worktree-pool/blob/main/docs/releases.md)
-for publishing and compatibility policy. Version 0.1.0 has not yet been uploaded
+for publishing and compatibility policy. Version 0.2.0 has not yet been uploaded
 by this setup.
 
 ## Quick start
@@ -77,16 +77,23 @@ worktree-pool repo register /absolute/repository
 worktree-pool acquire --repo /absolute/repository
 ```
 
-With no reference, acquisition fetches and checks out the latest `origin/main`.
+Every acquisition discovers the default branch from `origin` and fetches that refresh baseline.
+With no task reference, acquisition uses the resolved commit from this fetch.
 To start from a locally known branch, tag, or commit, supply a reference:
 
 ```sh
 worktree-pool acquire --repo /absolute/repository my-task-branch
 ```
 
-An explicit reference uses local Git state without fetching. This also applies to
-remote-tracking references such as `origin/main`. Fetch before acquisition if you
-need a newer remote commit. A missing reference fails without assigning a worktree.
+An explicit task reference resolves from local Git state after the baseline fetch succeeds.
+This includes tracking references such as `origin/master`, local branches, tags, and commits.
+Acquisition does not fetch a separate task branch. A missing task reference prevents assignment.
+
+The remote default can use `main`, `master`, or a nested name such as `release/stable`.
+Each refresh discovers the default again. It records the selected baseline before fetching.
+A later default change does not redirect that operation.
+Discovery failure stops acquisition without a fallback to cached `origin/HEAD` or another branch.
+A failed baseline fetch blocks acquisition even when the task reference exists locally.
 
 Work in the returned path. Create a Git branch if your task needs one.
 When finished, commit your changes and release the returned assignment handle:
@@ -107,6 +114,8 @@ Inspection retains the failure category, stage, reference names, available Git
 exit status, and a corrective instruction. Diagnostics exclude credentials,
 remote URLs, and raw Git stderr. Historical operations can lack diagnostics.
 A catalog rebuild preserves this distinction.
+Discovery failures report no baseline when discovery selected none.
+Recovery uses recorded facts and performs neither discovery nor fetch.
 
 Correct the reported problem before explicit recovery:
 

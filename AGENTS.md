@@ -39,3 +39,10 @@ read `docs/agents/triage-labels.md`.
 
 Use a single-context layout. Before exploring domain concepts or decisions,
 read `docs/agents/domain.md`.
+
+## Acquisition baseline
+
+Every acquisition discovers the default branch from `origin` and requires a successful fresh baseline fetch.
+An explicit task reference resolves locally after that fetch. It does not request another branch fetch.
+Retain the recorded baseline and resolved commit. For refresh failure, retain the exact operation ID.
+Inspect that operation before requesting explicit recovery approval. Recovery performs neither discovery nor fetch.

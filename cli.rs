@@ -480,7 +480,10 @@ fn resources(cli: &Cli, paths: &Paths, command: &str) -> Result<Envelope, PoolEr
             context["operation_id"] = json!(operation.operation_id);
             if operation.state != crate::management::RefreshState::Completed {
                 outcome = "pending";
-                reason_code = if operation.last_checkpoint == "fetch_failed" {
+                reason_code = if matches!(
+                    operation.last_checkpoint.as_str(),
+                    "fetch_failed" | "discovery_failed"
+                ) {
                     "refresh_failed"
                 } else {
                     "operation_pending"

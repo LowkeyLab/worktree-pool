@@ -85,6 +85,7 @@ fn main() {
         refresh_observed(&paths, Some(&repo), |checkpoint| {
             let name = match checkpoint {
                 RefreshCheckpoint::IntentRecorded => "intent",
+                RefreshCheckpoint::BaselineSelected => "baseline",
                 RefreshCheckpoint::FetchObserved => "fetch",
                 RefreshCheckpoint::ResultCommitted => "result",
             };

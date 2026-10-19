@@ -155,6 +155,7 @@ pub fn register_worktree(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RefreshCheckpoint {
     IntentRecorded,
+    BaselineSelected,
     FetchObserved,
     ResultCommitted,
 }
@@ -196,7 +197,8 @@ pub(crate) fn refresh_locked(
     repo: &Repository,
     mut observe: impl FnMut(RefreshCheckpoint),
 ) -> Result<(CatalogProjection, crate::management::RefreshOperation), PoolError> {
-    use crate::management::{OperationId, RefreshFailed, RefreshFinished, RefreshStarted};
+    use crate::management::{OperationId, RefreshStarted};
+    use crate::refresh::{BaselineSelected, RefreshResult};
     let operation_id = OperationId::new();
     let contextualize = |source| PoolError::RefreshResult {
         repository_id: repo.repository_id,
@@ -220,7 +222,7 @@ pub(crate) fn refresh_locked(
         }
         let event = management_event(
             session.projection.catalog_id,
-            &ManagementEvent::RefreshStarted(RefreshStarted {
+            &ManagementEvent::RefreshDiscoveryStarted(RefreshStarted {
                 operation_id,
                 repository_id: repo.repository_id,
             }),
@@ -239,22 +241,44 @@ pub(crate) fn refresh_locked(
         observe(RefreshCheckpoint::IntentRecorded);
         // No catalog handle/lock remains across a Git subprocess. std's lock FDs are close-on-exec.
         let path = repo.common_directory.to_path()?;
-        let result = git::refresh_origin_main(&path);
-        observe(RefreshCheckpoint::FetchObserved);
+        let result = match git::discover_refresh_baseline(&path) {
+            Ok(baseline) => {
+                {
+                    let session = catalog::open(paths)?;
+                    let event = management_event_caused_by(
+                        session.projection.catalog_id,
+                        &ManagementEvent::RefreshBaselineSelected(BaselineSelected {
+                            operation_id,
+                            repository_id: repo.repository_id,
+                            baseline: baseline.clone(),
+                        }),
+                        &intent_event_id,
+                    )?;
+                    session.store().append(
+                        decode_event(&event, session.projection.catalog_id)?
+                            .expected_revision(&session.projection)?,
+                        event,
+                    )?;
+                }
+                observe(RefreshCheckpoint::BaselineSelected);
+                let result = git::fetch_refresh_baseline(&path, &baseline);
+                observe(RefreshCheckpoint::FetchObserved);
+                result
+            }
+            Err(diagnostic) => Err(diagnostic),
+        };
         let state = {
             let session = catalog::open(paths)?;
-            let fact = match result {
-                Ok(commit) => ManagementEvent::RefreshFinished(RefreshFinished {
-                    operation_id,
-                    repository_id: repo.repository_id,
-                    resolved_commit: Some(commit),
-                }),
-                Err(diagnostic) => ManagementEvent::RefreshFailed(RefreshFailed {
-                    operation_id,
-                    repository_id: repo.repository_id,
-                    diagnostic,
-                }),
+            let (resolved_commit, diagnostic) = match result {
+                Ok(commit) => (Some(commit), None),
+                Err(diagnostic) => (None, Some(diagnostic)),
             };
+            let fact = ManagementEvent::RefreshResult(RefreshResult {
+                operation_id,
+                repository_id: repo.repository_id,
+                resolved_commit,
+                diagnostic,
+            });
             let event =
                 management_event_caused_by(session.projection.catalog_id, &fact, &intent_event_id)?;
             session.store().append(

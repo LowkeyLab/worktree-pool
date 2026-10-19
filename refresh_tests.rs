@@ -245,3 +245,221 @@ fn rejected_refresh_intent_does_not_report_an_unrecorded_operation() {
         eq(Some(operation_id.to_string().as_str()))
     );
 }
+
+#[googletest::test]
+fn remote_default_interpretation_selects_one_usable_branch_without_exposing_input() {
+    use crate::refresh::interpret_default;
+    let oid = "0123456789abcdef0123456789abcdef01234567";
+    for (branch, destination) in [
+        ("refs/heads/master", "refs/remotes/origin/master"),
+        (
+            "refs/heads/release/stable",
+            "refs/remotes/origin/release/stable",
+        ),
+    ] {
+        let baseline =
+            interpret_default(format!("ref: {branch}\tHEAD\n{oid}\tHEAD\n").as_bytes()).unwrap();
+        assert_that!(baseline.source_reference.as_str(), eq(branch));
+        assert_that!(baseline.destination_reference.as_str(), eq(destination));
+    }
+    for (input, category) in [
+        (String::new(), FailureCategory::MissingDefault),
+        (format!("{oid}\tHEAD\n"), FailureCategory::MissingDefault),
+        (
+            format!("ref: refs/heads/master\tHEAD\nref: refs/heads/main\tHEAD\n{oid}\tHEAD\n"),
+            FailureCategory::AmbiguousDefault,
+        ),
+        (
+            format!("ref: refs/heads/master\tHEAD\r\n{oid}\tHEAD\r\n"),
+            FailureCategory::InvalidDefault,
+        ),
+        (
+            format!("ref: refs/heads/main\tHEAD\n{}\tHEAD\n", "0".repeat(40)),
+            FailureCategory::InvalidDefault,
+        ),
+        (
+            "ref: refs/heads/main\tHEAD\n".into(),
+            FailureCategory::InvalidDefault,
+        ),
+        (
+            format!("ref: https://user:secret@example.invalid/repo\tHEAD\n{oid}\tHEAD\n"),
+            FailureCategory::InvalidDefault,
+        ),
+    ] {
+        let diagnostic = interpret_default(input.as_bytes()).unwrap_err();
+        assert_that!(diagnostic.category, eq(category));
+        assert_that!(diagnostic.stage, eq(RefreshStage::Discovery));
+        assert_that!(diagnostic.source_reference.as_deref(), eq(None));
+        assert_that!(diagnostic.destination_reference.as_deref(), eq(None));
+        assert_that!(
+            serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("secret"),
+            eq(false)
+        );
+        assert_that!(diagnostic.validate_for(None).is_ok(), eq(true));
+    }
+    for branch in [
+        "",
+        "/main",
+        ".hidden",
+        "a/.hidden",
+        "a.lock",
+        "a//b",
+        "a..b",
+        "a@{b",
+        "a\\b",
+        "a:b",
+        "a b",
+        "a\nb",
+        "-option",
+        "a.",
+    ] {
+        let diagnostic =
+            interpret_default(format!("ref: refs/heads/{branch}\tHEAD\n{oid}\tHEAD\n").as_bytes())
+                .unwrap_err();
+        assert_that!(diagnostic.category, eq(FailureCategory::InvalidDefault));
+    }
+}
+
+#[googletest::test]
+fn versioned_refresh_transitions_fix_the_baseline_and_preserve_historical_meaning() {
+    use crate::{
+        domain::{self, CatalogId, CatalogProjection},
+        management::{
+            ManagementEvent as Fact, OperationId, RefreshFinished, RefreshStarted, Repository,
+            RepositoryId,
+        },
+        paths::EncodedPath,
+        refresh::{BaselineSelected, RefreshBaseline, RefreshResult},
+    };
+    fn apply(
+        state: &CatalogProjection,
+        wire: &serde_json::Value,
+    ) -> Result<CatalogProjection, crate::error::PoolError> {
+        domain::reduce(
+            Some(state),
+            state.revision,
+            &domain::decode_event(wire, state.catalog_id)?,
+        )
+    }
+    let catalog = CatalogId::new();
+    let initialized =
+        domain::decode_event(&domain::initialized_event(catalog).unwrap(), catalog).unwrap();
+    let mut state = domain::reduce(None, 0, &initialized).unwrap();
+    let repository_id = RepositoryId::new();
+    let registered = domain::management_event(
+        catalog,
+        &Fact::RepositoryRegistered(Repository {
+            repository_id,
+            common_directory: EncodedPath::from_path(std::path::Path::new("/private/git")),
+            context_path: EncodedPath::from_path(std::path::Path::new("/private")),
+            capacity: 4,
+            revision: 0,
+        }),
+    )
+    .unwrap();
+    state = apply(&state, &registered).unwrap();
+    let commit = "0123456789abcdef0123456789abcdef01234567".to_owned();
+    for historical in [true, false] {
+        let operation_id = OperationId::new();
+        let start = RefreshStarted {
+            operation_id,
+            repository_id,
+        };
+        let started = domain::management_event(
+            catalog,
+            &if historical {
+                Fact::RefreshStarted(start)
+            } else {
+                Fact::RefreshDiscoveryStarted(start)
+            },
+        )
+        .unwrap();
+        let cause = started["id"].as_str().unwrap();
+        state = apply(&state, &started).unwrap();
+        let finish = |fact| domain::management_event_caused_by(catalog, &fact, cause).unwrap();
+        if historical {
+            let finished = finish(Fact::RefreshFinished(RefreshFinished {
+                operation_id,
+                repository_id,
+                resolved_commit: Some(commit.clone()),
+            }));
+            state = apply(&state, &finished).unwrap();
+            let operation = state.operations.last().unwrap();
+            assert_that!(
+                operation
+                    .recorded_baseline()
+                    .unwrap()
+                    .source_reference
+                    .as_str(),
+                eq("refs/heads/main")
+            );
+            let wire = serde_json::to_value(operation).unwrap();
+            assert_that!(wire.get("baseline"), eq(None));
+            assert_that!(wire.get("discovers_default"), eq(None));
+            assert_that!(wire.get("diagnostic"), eq(None));
+            continue;
+        }
+        let success = finish(Fact::RefreshResult(RefreshResult {
+            operation_id,
+            repository_id,
+            resolved_commit: Some(commit.clone()),
+            diagnostic: None,
+        }));
+        assert_that!(apply(&state, &success).is_err(), eq(true));
+        let selected = finish(Fact::RefreshBaselineSelected(BaselineSelected {
+            operation_id,
+            repository_id,
+            baseline: RefreshBaseline::from_source("refs/heads/release/stable").unwrap(),
+        }));
+        let mut forged = selected.clone();
+        forged["causationid"] = serde_json::json!(OperationId::new());
+        assert_that!(apply(&state, &forged).is_err(), eq(true));
+        state = apply(&state, &selected).unwrap();
+        assert_that!(
+            state.operations.last().unwrap().last_checkpoint.as_str(),
+            eq("baseline_selected")
+        );
+        assert_that!(apply(&state, &selected).is_err(), eq(true));
+        let changed = finish(Fact::RefreshBaselineSelected(BaselineSelected {
+            operation_id,
+            repository_id,
+            baseline: RefreshBaseline::historical(),
+        }));
+        assert_that!(apply(&state, &changed).is_err(), eq(true));
+        let legacy = finish(Fact::RefreshFinished(RefreshFinished {
+            operation_id,
+            repository_id,
+            resolved_commit: Some(commit.clone()),
+        }));
+        assert_that!(apply(&state, &legacy).is_err(), eq(true));
+        let diagnostic =
+            RefreshDiagnostic::new(RefreshStage::Fetch, FailureCategory::GitFailed, Some(128))
+                .for_baseline(Some(&RefreshBaseline::historical()));
+        let wrong_baseline = finish(Fact::RefreshResult(RefreshResult {
+            operation_id,
+            repository_id,
+            resolved_commit: None,
+            diagnostic: Some(diagnostic),
+        }));
+        assert_that!(apply(&state, &wrong_baseline).is_err(), eq(true));
+        state = apply(&state, &success).unwrap();
+        assert_that!(
+            state.operations.last().unwrap().resolved_commit.as_deref(),
+            eq(Some(commit.as_str()))
+        );
+        assert_that!(
+            state
+                .operations
+                .last()
+                .unwrap()
+                .recorded_baseline()
+                .unwrap()
+                .destination_reference
+                .as_str(),
+            eq("refs/remotes/origin/release/stable")
+        );
+        assert_that!(apply(&state, &success).is_err(), eq(true));
+    }
+}

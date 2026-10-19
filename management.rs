@@ -100,6 +100,19 @@ pub struct RefreshOperation {
     pub resolved_commit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic: Option<crate::refresh::RefreshDiagnostic>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discovers_default: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::refresh::RefreshBaseline>,
+}
+impl RefreshOperation {
+    pub(crate) fn recorded_baseline(&self) -> Option<crate::refresh::RefreshBaseline> {
+        if self.discovers_default {
+            self.baseline.clone()
+        } else {
+            Some(crate::refresh::RefreshBaseline::historical())
+        }
+    }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -147,6 +160,9 @@ pub enum ManagementEvent {
     RefreshStarted(RefreshStarted),
     RefreshFinished(RefreshFinished),
     RefreshFailed(RefreshFailed),
+    RefreshDiscoveryStarted(RefreshStarted),
+    RefreshBaselineSelected(crate::refresh::BaselineSelected),
+    RefreshResult(crate::refresh::RefreshResult),
 }
 impl ManagementEvent {
     #[must_use]
@@ -169,6 +185,13 @@ impl ManagementEvent {
             Self::RefreshStarted(_) => "io.lowkeylab.worktreepool.repository.refresh.started.v1",
             Self::RefreshFinished(_) => "io.lowkeylab.worktreepool.repository.refresh.finished.v1",
             Self::RefreshFailed(_) => "io.lowkeylab.worktreepool.repository.refresh.failed.v1",
+            Self::RefreshDiscoveryStarted(_) => {
+                "io.lowkeylab.worktreepool.repository.refresh.started.v2"
+            }
+            Self::RefreshBaselineSelected(_) => {
+                "io.lowkeylab.worktreepool.repository.refresh.baseline.selected.v1"
+            }
+            Self::RefreshResult(_) => "io.lowkeylab.worktreepool.repository.refresh.finished.v2",
         }
     }
     #[must_use]
@@ -189,6 +212,9 @@ impl ManagementEvent {
             Self::RefreshStarted(r) => Some(r.repository_id),
             Self::RefreshFinished(r) => Some(r.repository_id),
             Self::RefreshFailed(r) => Some(r.repository_id),
+            Self::RefreshDiscoveryStarted(r) => Some(r.repository_id),
+            Self::RefreshBaselineSelected(r) => Some(r.repository_id),
+            Self::RefreshResult(r) => Some(r.repository_id),
         }
     }
     #[must_use]
@@ -204,6 +230,9 @@ impl ManagementEvent {
             Self::RefreshStarted(r) => Some(r.operation_id),
             Self::RefreshFinished(r) => Some(r.operation_id),
             Self::RefreshFailed(r) => Some(r.operation_id),
+            Self::RefreshDiscoveryStarted(r) => Some(r.operation_id),
+            Self::RefreshBaselineSelected(r) => Some(r.operation_id),
+            Self::RefreshResult(r) => Some(r.operation_id),
             _ => None,
         }
     }
@@ -228,6 +257,9 @@ impl ManagementEvent {
             Self::RefreshStarted(r) => format!("repositories/{}", r.repository_id),
             Self::RefreshFinished(r) => format!("repositories/{}", r.repository_id),
             Self::RefreshFailed(r) => format!("repositories/{}", r.repository_id),
+            Self::RefreshDiscoveryStarted(r) => format!("repositories/{}", r.repository_id),
+            Self::RefreshBaselineSelected(r) => format!("repositories/{}", r.repository_id),
+            Self::RefreshResult(r) => format!("repositories/{}", r.repository_id),
         }
     }
     /// Apply an enrollment fact without filesystem or Git effects.
@@ -256,7 +288,13 @@ impl ManagementEvent {
             Self::WorktreeRegistered(worktree) | Self::WorktreeEnrolled(worktree) => {
                 enroll_worktree(state, worktree)?;
             }
-            Self::RefreshStarted(started) => {
+            Self::RefreshStarted(started) | Self::RefreshDiscoveryStarted(started) => {
+                if matches!(self, Self::RefreshDiscoveryStarted(_))
+                    && (causation_id.is_some()
+                        || state.operation_identity_used(started.operation_id))
+                {
+                    return Err(PoolError::Conflict);
+                }
                 if state.has_pending_recovery(started.repository_id) {
                     return Err(PoolError::OperationPending);
                 }
@@ -283,7 +321,67 @@ impl ManagementEvent {
                     intent_event_id: event_id.into(),
                     resolved_commit: None,
                     diagnostic: None,
+                    discovers_default: matches!(self, Self::RefreshDiscoveryStarted(_)),
+                    baseline: None,
                 });
+            }
+            Self::RefreshBaselineSelected(selected) => {
+                selected.baseline.validate()?;
+                let operation = state
+                    .operations
+                    .iter_mut()
+                    .find(|o| {
+                        o.operation_id == selected.operation_id
+                            && o.repository_id == selected.repository_id
+                    })
+                    .ok_or(PoolError::Corrupt)?;
+                if !operation.discovers_default
+                    || operation.state != RefreshState::Pending
+                    || operation.baseline.is_some()
+                    || operation.last_checkpoint != "intent_recorded"
+                    || causation_id != Some(operation.intent_event_id.as_str())
+                {
+                    return Err(PoolError::Conflict);
+                }
+                operation.baseline = Some(selected.baseline.clone());
+                operation.last_checkpoint = "baseline_selected".into();
+            }
+            Self::RefreshResult(result) => {
+                let operation = state
+                    .operations
+                    .iter_mut()
+                    .find(|o| {
+                        o.operation_id == result.operation_id
+                            && o.repository_id == result.repository_id
+                    })
+                    .ok_or(PoolError::Corrupt)?;
+                if !operation.discovers_default
+                    || operation.state != RefreshState::Pending
+                    || causation_id != Some(operation.intent_event_id.as_str())
+                {
+                    return Err(PoolError::Conflict);
+                }
+                match (&result.resolved_commit, &result.diagnostic) {
+                    (Some(commit), None)
+                        if operation.baseline.is_some() && crate::refresh::valid_commit(commit) =>
+                    {
+                        operation.state = RefreshState::Completed;
+                        operation.last_checkpoint = "result_committed".into();
+                        operation.resolved_commit = Some(commit.clone());
+                    }
+                    (None, Some(diagnostic)) => {
+                        diagnostic.validate_for(operation.baseline.as_ref())?;
+                        operation.state = RefreshState::NeedsReconciliation;
+                        operation.last_checkpoint = if operation.baseline.is_some() {
+                            "fetch_failed"
+                        } else {
+                            "discovery_failed"
+                        }
+                        .into();
+                        operation.diagnostic = Some(diagnostic.clone());
+                    }
+                    _ => return Err(PoolError::Corrupt),
+                }
             }
             Self::RefreshFailed(failed) => {
                 failed.diagnostic.validate()?;
@@ -295,7 +393,8 @@ impl ManagementEvent {
                             && o.repository_id == failed.repository_id
                     })
                     .ok_or(PoolError::Corrupt)?;
-                if operation.state != RefreshState::Pending
+                if operation.discovers_default
+                    || operation.state != RefreshState::Pending
                     || causation_id != Some(operation.intent_event_id.as_str())
                 {
                     return Err(PoolError::Conflict);
@@ -321,7 +420,8 @@ impl ManagementEvent {
                             && o.repository_id == finished.repository_id
                     })
                     .ok_or(PoolError::Corrupt)?;
-                if operation.state != RefreshState::Pending
+                if operation.discovers_default
+                    || operation.state != RefreshState::Pending
                     || causation_id != Some(operation.intent_event_id.as_str())
                 {
                     return Err(PoolError::Conflict);
