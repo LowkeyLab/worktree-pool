@@ -7542,3 +7542,59 @@ fn interrupted_baseline_recovery_uses_recorded_facts_without_remote_access() {
         );
     }
 }
+
+#[googletest::test]
+fn reserved_head_baseline_fails_discovery_before_fetch_or_assignment() {
+    let fixture = Fixture::new();
+    let (source, checkout, id) = fixture.acquisition();
+    let before = fixture.git_text(&checkout, &["show-ref"]);
+    fixture.git(
+        &source,
+        &[
+            "commit".as_ref(),
+            "--allow-empty".as_ref(),
+            "-m".as_ref(),
+            "advance baseline".as_ref(),
+        ],
+    );
+    fixture.git(
+        &source,
+        &[
+            "update-ref".as_ref(),
+            "refs/heads/HEAD".as_ref(),
+            "HEAD".as_ref(),
+        ],
+    );
+    fixture.git(
+        &source,
+        &[
+            "symbolic-ref".as_ref(),
+            "HEAD".as_ref(),
+            "refs/heads/HEAD".as_ref(),
+        ],
+    );
+    let result = fixture.json(&["acquire", "--repo", &id, "main"]);
+    assert_that!(result["outcome"].as_str(), eq(Some("pending")));
+    assert_that!(
+        result["data"]["operation"]["diagnostic"]["stage"].as_str(),
+        eq(Some("discovery"))
+    );
+    assert_that!(
+        result["data"]["operation"]["diagnostic"]["category"].as_str(),
+        eq(Some("invalid_default"))
+    );
+    assert_that!(result["data"]["operation"].get("baseline"), eq(None));
+    assert_that!(fixture.git_text(&checkout, &["show-ref"]), eq(&before));
+    assert_that!(
+        fixture.json(&["assignment", "list"])["data"]["assignments"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        eq(true)
+    );
+    let operation = result["context"]["operation_id"].as_str().unwrap();
+    assert_that!(
+        &fixture.json(&["operation", "inspect", operation])["data"]["operation"],
+        eq(&result["data"]["operation"])
+    );
+}

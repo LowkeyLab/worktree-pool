@@ -317,6 +317,7 @@ fn remote_default_interpretation_selects_one_usable_branch_without_exposing_inpu
         assert_that!(diagnostic.validate_for(None).is_ok(), eq(true));
     }
     for branch in [
+        "HEAD",
         "",
         "/main",
         ".hidden",
