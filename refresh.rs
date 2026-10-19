@@ -146,7 +146,7 @@ impl RefreshBaseline {
         let branch = source
             .strip_prefix("refs/heads/")
             .ok_or(crate::error::PoolError::Corrupt)?;
-        if branch == "HEAD"
+        if branch.split('/').next() == Some("HEAD")
             || branch.is_empty()
             || branch.contains("..")
             || branch.contains("@{")

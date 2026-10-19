@@ -659,7 +659,7 @@ Refresh records intent before remote discovery. It requests the default branch f
 `origin` with `git ls-remote --symref origin HEAD`. Discovery must report one valid
 branch and a usable commit. The tool rejects missing, ambiguous, or malformed results.
 It uses no fallback to `main`, `master`, or cached `origin/HEAD`.
-The default `refs/heads/HEAD` is unusable because its destination collides with Git’s special `origin/HEAD` reference.
+The default `refs/heads/HEAD` and its descendants are unusable. Their destinations collide with Git's special `origin/HEAD` reference.
 
 The operation records the refresh baseline before fetching. It fetches that source
 into the corresponding `refs/remotes/origin/` reference. It then records the resolved

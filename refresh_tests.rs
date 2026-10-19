@@ -252,6 +252,7 @@ fn remote_default_interpretation_selects_one_usable_branch_without_exposing_inpu
     let oid = "0123456789abcdef0123456789abcdef01234567";
     for (branch, destination) in [
         ("refs/heads/master", "refs/remotes/origin/master"),
+        ("refs/heads/HEAD-topic", "refs/remotes/origin/HEAD-topic"),
         (
             "refs/heads/release/stable",
             "refs/remotes/origin/release/stable",
@@ -318,6 +319,8 @@ fn remote_default_interpretation_selects_one_usable_branch_without_exposing_inpu
     }
     for branch in [
         "HEAD",
+        "HEAD/topic",
+        "HEAD/release/stable",
         "",
         "/main",
         ".hidden",
