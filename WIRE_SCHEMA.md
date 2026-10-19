@@ -28,7 +28,7 @@ Below `P` means `EncodedPath`, `CP` `CatalogProjection`, `R` Repository, `W` raw
 | `repo register`                   | repository:R, revision                                                                                                                                                                                             | `repository_id`. `cli.rs`:481                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `repo list`                       | repositories:R[], revision                                                                                                                                                                                         | C only, even with --repo. `cli.rs`:527                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `repo inspect`                    | repository:R,`registered_count`:usize,resources:`RepositoryUsage`,operations:`RefreshOperation`[],creations:`CreationOperation`[],revision                                                                         | `repository_id`. `cli.rs`:535                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `repo refresh`                    | operation:`RefreshOperation`,`next_action`,revision                                                                                                                                                                | `repository_id`,`operation_id`. `cli.rs`:450. Non-completed refresh returns pending with `refresh_failed` for `fetch_failed` else `operation_pending`                                                                                                                                                                                                                                                                                                    |
+| `repo refresh`                    | operation:`RefreshOperation`,`next_action`,revision                                                                                                                                                                | `repository_id`,`operation_id`. `cli.rs`:450. Non-completed refresh returns pending with `refresh_failed` for `fetch_failed` or `discovery_failed` else `operation_pending`                                                                                                                                                                                                                                                                                                    |
 | `worktree register`               | worktree:`WV`,revision                                                                                                                                                                                             | `repository_id`,`worktree_id`. `cli.rs`:489                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `worktree list`                   | worktrees:`WV`[],revision                                                                                                                                                                                          | C only. `cli.rs`:553                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `worktree inspect`                | worktree:`WV`,revision                                                                                                                                                                                             | `repository_id`,`worktree_id`. `cli.rs`:571. Retired exact ID returns distinct retired `WV` below                                                                                                                                                                                                                                                                                                                                                        |
@@ -72,7 +72,7 @@ All fields below present unless noted. Types `?` mean `JSON` null. Numbers are `
 - Current `WV` W + `registration_state`,resources:`WorktreeUsage`,ownership,`assignment_handle`:`UUID`?,availability,`withheld_reason`:string?,creation:`CreationOperation`?,`pending_work`:O[]. Retired `WV` W + `registration_state`:`"retired"`,ownership:`"unassigned"`,availability:`"retired"`,retirement:`RetirementOperation`,resources:`RetiredUsage`. **doesn't add** `assignment_handle`/`withheld_reason`/creation/`pending_work`.
 - A: `assignment_handle`,`operation_id`,`repository_id`,`worktree_id`,path:P,`resolved_commit`,branch:string?,state:`AssignmentState`.
 - `WithheldWorktree`: `repository_id`,`worktree_id`,reason:string.
-- `RefreshOperation`: `operation_id`,`repository_id`,state,`last_checkpoint`,`intent_event_id`,`resolved_commit`:string?, `diagnostic`?:`RefreshDiagnostic` (**omitted** when unavailable).
+- `RefreshOperation`: `operation_id`,`repository_id`,state,`last_checkpoint`,`intent_event_id`,`resolved_commit`:string?, `diagnostic`?:`RefreshDiagnostic` (**omitted** when unavailable), `discovers_default`?:true, `baseline`?:`RefreshBaseline`. Historical operations omit the last two fields. A new intent omits `baseline` until selection.
 - `AcquisitionOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,state,`intent_event_id`,`last_checkpoint`,`preservation_tip`:string?,`preservation_reference`:string?.
 - `ReleaseOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,state,tip,branch:string?,`preservation_reference`:string?,`intent_event_id`,`last_checkpoint`.
 - `CreationOperation`: `operation_id`,`repository_id`,`worktree_id`,`assignment_handle`,`acquisition_operation_id`,state,`last_checkpoint`,`intent_event_id`.
@@ -92,7 +92,7 @@ All fields below present unless noted. Types `?` mean `JSON` null. Numbers are `
 These enums serialize as the following values. They differ from outcome aliases:
 
 - `AssignmentState` preparing/active/released.
-- `RefreshState` pending/completed/`needs_reconciliation`/reconciled. Checkpoints `intent_recorded`/`result_committed`/`fetch_failed`/`refresh_reconciled`.
+- `RefreshState` pending/completed/`needs_reconciliation`/reconciled. Checkpoints `intent_recorded`/`baseline_selected`/`result_committed`/`discovery_failed`/`fetch_failed`/`refresh_reconciled`.
 - `AcquisitionState` reserved/`preservation_intended`/preserved/`checkout_intended`/completed/`needs_reconciliation`/reconciled. Checkpoints `reservation_committed`/`preservation_intended`/`preservation_committed`/`checkout_intended`/`acquisition_committed`/`checkout_uncertain`/`acquisition_reconciled`.
 - `ReleaseState` intended/preserved/completed/`needs_reconciliation`/reconciled. Checkpoints `release_intended`/`preservation_committed`/`preservation_failed`/`release_committed`/`release_state_uncertain`/`release_reconciled`.
 - `CreationState` reserved/`path_prepared`/completed/`needs_reconciliation`/reconciled. Checkpoints `creation_registered`/`creation_path_prepared`/`creation_committed`/`creation_uncertain`/`creation_reconciled`.
@@ -136,7 +136,7 @@ Type suffixes all prefixed `io.lowkeylab.worktreepool.`. Outer kind -> record:
 - Outer retirement: `worktree.retirement.started.v1` started:`RetirementOperation`. `worktree.retirement.finished.v1` finished:{`operation_id`,`repository_id`,`worktree_id`}.
 - Outer relocation: `catalog.relocation.started.v1` started:`RelocationIntent`. `catalog.relocation.completed.v1` completed:{`operation_id`,`catalog_id`}.
 
-## Refresh failure diagnostics
+## Historical refresh failure diagnostics
 
 `repository.refresh.failed.v1` uses outer kind `refresh_failed`. Its record is
 `{operation_id,repository_id,diagnostic:RefreshDiagnostic}`. The subject is
@@ -175,3 +175,61 @@ Success and historical failures omit `diagnostic`. Historical finished events
 remain unchanged. Reconstruction invents no diagnostics. Recovery performs no
 fetch and reports `fresh_fetch_proven:false`. Pending refreshes block acquisition.
 No diagnostic contains Git stdout, stderr, remote URLs, or credentials.
+
+
+## Remote default refresh events
+
+New refreshes use these event types with the existing `io.lowkeylab.worktreepool.` prefix:
+
+| Event type | Outer kind | Record |
+| --- | --- | --- |
+| `repository.refresh.started.v2` | `refresh_discovery_started` | `{operation_id,repository_id}` |
+| `repository.refresh.baseline.selected.v1` | `refresh_baseline_selected` | `{operation_id,repository_id,baseline:RefreshBaseline}` |
+| `repository.refresh.finished.v2` | `refresh_result` | `{operation_id,repository_id,resolved_commit:string|null,diagnostic:RefreshDiagnostic|null}` |
+
+All three events use subject `repositories/<repository-id>` and the refresh operation ID.
+Selection and result require `causationid` equal to the started event ID.
+The repository stream advances for each event. Transactions retain atomic projection updates.
+
+`RefreshBaseline` contains `source_reference` and `destination_reference` strings.
+The source is a valid `refs/heads/<branch>` reference. The destination is the corresponding
+`refs/remotes/origin/<branch>` reference. Names must be UTF-8 and pass full-reference validation.
+Discovery rejects `refs/heads/HEAD` and its descendants with `invalid_default`. Their destinations collide with Git's special `origin/HEAD` reference.
+Selection occurs once before fetch. The operation retains that selection after remote changes.
+
+New operations include `discovers_default:true`. They omit `baseline` until selection.
+Discovery failure retains that absence. Historical operations omit both new fields.
+Their implicit baseline remains `refs/heads/main` into `refs/remotes/origin/main`.
+Historical events retain their original payloads and causal rules.
+
+A successful version-2 result requires a selected baseline and one valid resolved commit.
+Its diagnostic is null. A failed result requires a diagnostic and a null resolved commit.
+It records `needs_reconciliation` with `discovery_failed` before selection or `fetch_failed` afterward.
+An interrupted operation retains `pending` with `intent_recorded` or `baseline_selected`.
+`repo refresh` reports pending/`refresh_failed` for either failure checkpoint.
+
+New diagnostics retain the historical fields. They add stage `discovery` and categories
+`missing_default`, `ambiguous_default`, and `invalid_default`.
+These categories require discovery and Git status zero. Repository validation and discovery
+have null reference fields. Fetch uses the recorded source and destination.
+Commit resolution uses the recorded destination as source and a null destination.
+Replay rejects inconsistent references, stages, categories, instructions, and statuses.
+
+New controlled instructions include:
+
+- Discovery failure: "Check origin access and its default branch. Inspect this operation before explicit recovery."
+- Fetch `git_failed`: "Check origin access, the recorded baseline, and destination reference locks. Inspect this operation before explicit recovery."
+- Resolution `git_failed` or `invalid_commit`: "Check the recorded baseline commit and local object storage. Inspect this operation before explicit recovery."
+
+Repository and command failures retain their historical controlled instructions.
+Diagnostics exclude raw Git output, credentials, and remote URLs.
+
+Every acquisition completes a fresh baseline fetch before task reference resolution or assignment.
+An explicit task reference resolves locally after that fetch. It causes no separate task branch fetch.
+Failed acquisition retains the exact repository and refresh operation IDs through existing failure receipts.
+Recovery uses the recorded baseline and performs neither discovery nor fetch.
+Without a selected baseline, recovery reports a null `observed_commit`.
+Local observations never prove a successful fresh fetch. Later acquisition requires a new refresh.
+
+The CLI changes to version 0.2.0 under ADR 0002. Envelope, store, and projection versions remain independent.
+Older binaries reject unsupported new event types. Preserve a compatible binary after new events enter a catalog.

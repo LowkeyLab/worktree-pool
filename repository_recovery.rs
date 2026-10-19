@@ -270,7 +270,7 @@ fn reconcile(
             operation_id,
             repository_id,
             target_operation_id: target.operation_id,
-            target_checkpoint: target.last_checkpoint,
+            target_checkpoint: target.last_checkpoint.clone(),
             state: RepositoryRecoveryState::Intended,
             intent_event_id: String::new(),
             last_checkpoint: "repository_recovery_intended".into(),
@@ -290,11 +290,14 @@ fn reconcile(
         .find(|repository| repository.repository_id == repository_id)
         .ok_or(PoolError::Corrupt)?;
     // Only a local read: storage is closed and the short catalog lock is released.
-    let observed_commit = git::resolve_commit(
-        &repository.common_directory.to_path()?,
-        OsStr::new("refs/remotes/origin/main"),
-    )
-    .ok();
+    let observed_commit = match target.recorded_baseline() {
+        Some(baseline) => git::resolve_repository_commit(
+            &repository.common_directory.to_path()?,
+            OsStr::new(&baseline.destination_reference),
+        )
+        .ok(),
+        None => None,
+    };
     let operation = state
         .repository_recoveries
         .iter()
@@ -369,7 +372,7 @@ fn result(
         "observed_commit": recovery.and_then(|operation| operation.observed_commit.as_deref()),
         "revision": state.revision,
         "next_action": if fresh { "the recorded refresh result remains authoritative" }
-            else { "run a new explicit repository refresh or acquisition before using a fresh origin/main" },
+            else { "Run a new repository refresh or acquisition before using a fresh baseline." },
     });
     Ok((state, data))
 }

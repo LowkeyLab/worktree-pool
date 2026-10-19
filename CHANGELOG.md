@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.0]
+
+- Discover the refresh baseline from the default branch on `origin` for every acquisition.
+- Require a successful baseline fetch before resolving an explicit task reference.
+- Retain selected baselines and controlled discovery diagnostics in versioned events.
+- Reconcile interrupted refreshes without remote discovery or fetch.
+
+Explicit-reference acquisition now requires access to `origin`.
+Historical events retain their original meaning. Older binaries reject the new event types.
+
 ## [0.1.0]
 
 First release of the standalone `worktree-pool` CLI:

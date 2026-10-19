@@ -83,18 +83,17 @@ pub fn acquire_observed(
         return Err(PoolError::OperationPending);
     }
     let common = repo.common_directory.to_path()?;
-    let (state, target) = if let Some(reference) = reference {
-        let target = git::resolve_repository_commit(&common, reference)?;
-        (state, target)
+    let (state, refresh) = workflows::refresh_locked(paths, &repo, |_| {})?;
+    if refresh.state != crate::management::RefreshState::Completed {
+        return Err(PoolError::RefreshPending {
+            operation: Box::new(refresh),
+        });
+    }
+    observe(AcquisitionCheckpoint::RefreshCommitted);
+    let target = if let Some(reference) = reference {
+        git::resolve_repository_commit(&common, reference)?
     } else {
-        let (state, refresh) = workflows::refresh_locked(paths, &repo, |_| {})?;
-        if refresh.state != crate::management::RefreshState::Completed {
-            return Err(PoolError::RefreshPending {
-                operation: Box::new(refresh),
-            });
-        }
-        observe(AcquisitionCheckpoint::RefreshCommitted);
-        (state, refresh.resolved_commit.ok_or(PoolError::Corrupt)?)
+        refresh.resolved_commit.ok_or(PoolError::Corrupt)?
     };
     let (worktree, safety) = match select_worktree(paths, &repo, &state, &common, &target) {
         Ok(candidate) => candidate,

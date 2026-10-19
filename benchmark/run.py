@@ -257,9 +257,9 @@ class Runner:
             self.command(
                 ["git", "-C", self.repo, "remote", "set-url", "origin", self.source]
             )
-            # Pin a local origin/main even when the source checkout has another branch.
+            # Use a private main baseline for each source checkout.
             origin = self.output / "origin.git"
-            self.command(["git", "init", "--bare", origin])
+            self.command(["git", "init", "--bare", "--initial-branch=main", origin])
             self.command(
                 [
                     "git",

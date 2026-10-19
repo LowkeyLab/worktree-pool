@@ -83,12 +83,12 @@ pub fn checkout(path: &Path) -> Result<Checkout, PoolError> {
         path: root,
     })
 }
-/// Refreshes only the recorded canonical common-directory identity.
+/// Discover the default branch from origin after checking canonical repository identity.
 /// # Errors
-/// Refuses substituted/missing contexts and failed Git effects without stale fallback.
-pub fn refresh_origin_main(
+/// Return controlled diagnostics without a cached-reference fallback.
+pub fn discover_refresh_baseline(
     common_directory: &Path,
-) -> Result<String, crate::refresh::RefreshDiagnostic> {
+) -> Result<crate::refresh::RefreshBaseline, crate::refresh::RefreshDiagnostic> {
     use crate::refresh::{
         FailureCategory as Category, RefreshDiagnostic as Diagnostic, RefreshStage as Stage,
     };
@@ -115,18 +115,48 @@ pub fn refresh_origin_main(
             context.status.code(),
         ));
     }
-    let output = fetch(common_directory)
-        .map_err(|_| Diagnostic::new(Stage::Fetch, Category::CommandUnavailable, None))?;
+    let output = command(common_directory)
+        .args(["ls-remote", "--symref", "origin", "HEAD"])
+        .output()
+        .map_err(|_| Diagnostic::new(Stage::Discovery, Category::CommandUnavailable, None))?;
     if !output.status.success() {
-        return Err(Diagnostic::git_failure(Stage::Fetch, &output));
+        return Err(Diagnostic::git_failure(Stage::Discovery, &output));
     }
-    let output = origin_main_output(common_directory)
-        .map_err(|_| Diagnostic::new(Stage::ResolveCommit, Category::CommandUnavailable, None))?;
+    crate::refresh::interpret_default(&output.stdout)
+}
+
+/// Fetch only the recorded baseline and resolve its destination commit.
+/// # Errors
+/// Return controlled diagnostics without using a stale reference after failure.
+pub fn fetch_refresh_baseline(
+    common_directory: &Path,
+    baseline: &crate::refresh::RefreshBaseline,
+) -> Result<String, crate::refresh::RefreshDiagnostic> {
+    use crate::refresh::{
+        FailureCategory as Category, RefreshDiagnostic as Diagnostic, RefreshStage as Stage,
+    };
+    let failure = |stage, category, status| {
+        Diagnostic::new(stage, category, status).for_baseline(Some(baseline))
+    };
+    ensure_common_directory(common_directory)
+        .map_err(|_| failure(Stage::Fetch, Category::GitFailed, None))?;
+    let output = fetch(common_directory, baseline)
+        .map_err(|_| failure(Stage::Fetch, Category::CommandUnavailable, None))?;
     if !output.status.success() {
-        return Err(Diagnostic::git_failure(Stage::ResolveCommit, &output));
+        return Err(Diagnostic::git_failure(Stage::Fetch, &output).for_baseline(Some(baseline)));
     }
-    parse_origin_main(&output.stdout).map_err(|_| {
-        Diagnostic::new(
+    let output = command(common_directory)
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{}^{{commit}}", baseline.destination_reference))
+        .output()
+        .map_err(|_| failure(Stage::ResolveCommit, Category::CommandUnavailable, None))?;
+    if !output.status.success() {
+        return Err(
+            Diagnostic::git_failure(Stage::ResolveCommit, &output).for_baseline(Some(baseline))
+        );
+    }
+    parse_refresh_commit(&output.stdout).map_err(|_| {
+        failure(
             Stage::ResolveCommit,
             Category::InvalidCommit,
             output.status.code(),
@@ -153,7 +183,7 @@ fn ensure_common_directory(common_directory: &Path) -> Result<(), PoolError> {
 
 /// # Errors
 /// Rejects failures without treating a stale remote-tracking ref as fresh.
-fn fetch(path: &Path) -> Result<Output, PoolError> {
+fn fetch(path: &Path, baseline: &crate::refresh::RefreshBaseline) -> Result<Output, PoolError> {
     command(path)
         .args([
             "-c",
@@ -170,33 +200,19 @@ fn fetch(path: &Path) -> Result<Output, PoolError> {
             "--no-auto-maintenance",
             "--no-write-fetch-head",
             "origin",
-            "+refs/heads/main:refs/remotes/origin/main",
         ])
+        .arg(format!(
+            "+{}:{}",
+            baseline.source_reference, baseline.destination_reference
+        ))
         .output()
         .map_err(|_| PoolError::Git)
 }
 
-/// # Errors
-/// Requires an existing full commit; malformed or failed resolution is uncertainty.
-fn origin_main_output(path: &Path) -> Result<Output, PoolError> {
-    command(path)
-        .args([
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            "refs/remotes/origin/main^{commit}",
-        ])
-        .output()
-        .map_err(|_| PoolError::Git)
-}
-
-fn parse_origin_main(stdout: &[u8]) -> Result<String, PoolError> {
+fn parse_refresh_commit(stdout: &[u8]) -> Result<String, PoolError> {
     let oid = stdout.strip_suffix(b"\n").ok_or(PoolError::Git)?;
-    if !matches!(oid.len(), 40 | 64)
-        || !oid
-            .iter()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-    {
+    let text = std::str::from_utf8(oid).map_err(|_| PoolError::Git)?;
+    if !crate::refresh::valid_commit(text) {
         return Err(PoolError::Git);
     }
     String::from_utf8(oid.to_vec()).map_err(|_| PoolError::Git)

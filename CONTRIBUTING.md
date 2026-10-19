@@ -24,7 +24,7 @@ The crash helper is a Cargo example used only by tests; `cargo install --locked`
 installs the production `worktree-pool` executable. Fixtures use private catalogs,
 repositories, and remotes. Package acceptance is described below.
 
-The package remains version 0.1.0, AGPL-3.0-only, with Linux x86-64 and Git 2.36+
+The package remains version 0.2.0, AGPL-3.0-only, with Linux x86-64 and Git 2.36+
 runtime support. See [command schemas](WIRE_SCHEMA.md) and the
 [dependency contract](DEPENDENCIES.md). Registry publication follows the
 [release guide](https://github.com/LowkeyLab/worktree-pool/blob/main/docs/releases.md).
@@ -490,14 +490,14 @@ publication review. The publishing setup does not perform the first upload. The 
 verify name availability immediately before publication. A conflict requires
 maintainer resolution.
 
-After a maintainer publishes version 0.1.0, the intended registry command is:
+After a maintainer publishes version 0.2.0, the intended registry command is:
 
 ```sh
-cargo install --locked --version 0.1.0 worktree-pool
+cargo install --locked --version 0.2.0 worktree-pool
 ```
 
-Before publication, install from an extracted verified `worktree-pool-0.1.0.crate`
-using `cargo install --locked --path /path/to/worktree-pool-0.1.0`. The retained
+Before publication, install from an extracted verified `worktree-pool-0.2.0.crate`
+using `cargo install --locked --path /path/to/worktree-pool-0.2.0`. The retained
 archive includes its standalone lockfile, exact manifest, source, `AGPL-3.0` license,
 and public docs. It excludes benchmark/installation adapters and repository configuration
 and external workspace dependencies. Run `worktree-pool --version`, then initialize
@@ -655,40 +655,42 @@ and `pending_work`. An existing checkout needs acquisition-time safety
 validation before reuse. Missing/mismatched paths and pending repository work
 remain withheld. Inspection completes successfully without making them reusable.
 
-Refresh records intent before invoking Git, fetches exactly origin's main branch
-into `refs/remotes/origin/main`, then records its full resolved commit. It doesn't
-change checkout files, prune registrations, or expose other worktrees. Independent repositories can refresh concurrently.
+Refresh records intent before remote discovery. It requests the default branch from
+`origin` with `git ls-remote --symref origin HEAD`. Discovery must report one valid
+branch and a usable commit. The tool rejects missing, ambiguous, or malformed results.
+It uses no fallback to `main`, `master`, or cached `origin/HEAD`.
+The default `refs/heads/HEAD` and its descendants are unusable. Their destinations collide with Git's special `origin/HEAD` reference.
 
-Refresh data contains its `operation`: operation/repository identities,
-`intent_event_id`, `state`, `last_checkpoint`, and nullable `resolved_commit`.
-Success records `completed`/`result_committed`. A failed fetch or commit
-resolution records `needs_reconciliation`/`fetch_failed` and returns
-pending/`refresh_failed`. Interruption before result commitment retains
-`pending`/`intent_recorded`, even when Git actually completed. Repeating a pending
-refresh returns the existing operation without retrying effects or changing
-history. Use explicit recovery after inspecting the recorded identity. Lost stdout doesn't
-undo a completed refresh. Inspect the recorded repository operations.
+The operation records the refresh baseline before fetching. It fetches that source
+into the corresponding `refs/remotes/origin/` reference. It then records the resolved
+commit. Each new operation discovers the default again. A concurrent remote default
+change cannot redirect an operation after baseline selection.
 
-Refresh failures now use `repository.refresh.failed.v1`. This event contains
-operation and repository identities plus a typed `diagnostic`. Its cause must
-identify the recorded refresh intent. The event uses the repository stream.
-The normal durable transaction commits the event, projection, stream revision,
-and identity index together. Git runs after the intent session closes.
+The workflow retains repository coordination across these effects. Each catalog session
+closes before a Git subprocess starts. Refresh preserves checkout files and registrations.
+Independent repositories can refresh concurrently.
 
-The diagnostic records category, stage, source and destination references,
-available Git exit status, and a controlled corrective instruction.
-`repository_validation` checks canonical common-directory identity. `fetch`
-requests `refs/heads/main` into `refs/remotes/origin/main`. `resolve_commit`
-reads the resulting remote-tracking reference. The fetch baseline stays fixed.
-Nonzero Git results use broad failure categories. The tool does not infer
-transport, authentication, or lock causes from stderr.
+New operations use `repository.refresh.started.v2`,
+`repository.refresh.baseline.selected.v1`, and `repository.refresh.finished.v2`.
+The result contains either a resolved commit or a controlled diagnostic.
+Events, projections, stream revisions, and identity indexes commit atomically.
+Replay checks event causes, fixed baseline identity, diagnostic references, and result order.
+Historical version-1 events retain their original `origin/main` meaning and serialized fields.
+Rebuild preserves immutable history and invents no historical diagnostics.
 
-Diagnostics contain no Git stdout, stderr, remote URLs, or credentials.
-Enums restrict reference names and instructions. Replay rejects inconsistent
-stage, category, instruction, reference, or exit-status combinations.
-Historical `repository.refresh.finished.v1` failures retain their original
-meaning. Reconstruction omits their missing diagnostics. Recovery retains new
-diagnostics and performs no fetch.
+New operation data includes `discovers_default:true` and an optional `baseline`.
+The baseline contains `source_reference` and `destination_reference`.
+Discovery failure can leave the baseline absent. Success records
+`completed`/`result_committed`. Failure records `needs_reconciliation` with
+`discovery_failed` or `fetch_failed`. An interrupted operation retains `pending`
+at `intent_recorded` or `baseline_selected`. Repeated requests retain that operation
+without repeating remote effects. Explicit recovery is required before another attempt.
+
+Diagnostics contain category, stage, available branch references, Git exit status,
+and a controlled corrective instruction. They exclude raw Git output, remote URLs,
+and credentials. Discovery failures have no branch references. Fetch and resolution
+failures use the recorded baseline. The tool does not infer authentication or lock
+causes from stderr. See [WIRE_SCHEMA.md](WIRE_SCHEMA.md) for exact fields and versions.
 
 Acquisition failures caused by a pending refresh include `repository_id` and
 `operation_id` in context, plus the durable operation in data. Uncertain refresh
@@ -712,12 +714,15 @@ worktree-pool operation list [--repo <repository-id-or-path>]
 worktree-pool operation inspect <operation-id>
 ```
 
-Acquisition without a reference refreshes `origin/main` first and uses the commit
-in the recorded refresh result. An explicit reference resolves once from local
-Git state, without fetching or requiring `origin` or `origin/main`. Branches,
-tags, commit IDs, and remote-tracking references all use their locally known
-commits. Fetch first if you need a newer remote commit. A missing explicit
-reference rejects without recording a refresh or assigning a worktree.
+Every acquisition requires a successful fresh fetch of the refresh baseline.
+This includes acquisition with an explicit task reference. Acquisition resolves that
+reference from local Git state only after the baseline fetch succeeds. Branches,
+tags, tracking references, and full commits remain supported. A task reference does
+not request a separate task branch fetch. Without a task reference, acquisition uses
+the resolved commit from the recorded refresh result.
+
+A failed discovery or fetch blocks acquisition despite usable local references.
+A missing task reference rejects after refresh without assigning a worktree.
 Unresolved repository operations, including pending refreshes, block either
 acquisition mode until reconciliation. Preparation keeps the resolved commit
 fixed even when a reference changes. Only registered, unowned, present, safe worktrees are
@@ -933,8 +938,9 @@ original successful `completed` result. Exact original IDs then return their
 recorded completed recovery without adding another workflow. To request a new
 observation after resolving protected state, explicitly select the worktree or
 assignment. Refresh reconciliation never infers successful fresh fetch from an
-existing local `origin/main` reference: it reports `fresh_fetch_proven: false` and
-requires a new explicit repository refresh or acquisition without a reference. A previously committed
+recorded baseline destination, when available. It reports `fresh_fetch_proven: false`.
+Recovery performs neither discovery nor fetch. A discovery intent without a baseline
+produces no local commit observation. A later acquisition requires a new successful refresh. A previously committed
 successful refresh remains an unchanged proven result.
 
 A pending recovery blocks competing acquire/release/refresh for its repository

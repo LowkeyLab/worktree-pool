@@ -586,13 +586,13 @@ fn refresh_records_intent_and_resolves_fresh_origin_main_without_changing_checko
     assert_that!(
         events[2]["type"].as_str(),
         eq(Some(
-            "io.lowkeylab.worktreepool.repository.refresh.started.v1"
+            "io.lowkeylab.worktreepool.repository.refresh.started.v2"
         ))
     );
     assert_that!(
         events[3]["type"].as_str(),
         eq(Some(
-            "io.lowkeylab.worktreepool.repository.refresh.finished.v1"
+            "io.lowkeylab.worktreepool.repository.refresh.baseline.selected.v1"
         ))
     );
     assert_that!(
@@ -604,6 +604,13 @@ fn refresh_records_intent_and_resolves_fresh_origin_main_without_changing_checko
         eq(&refreshed["context"]["operation_id"])
     );
     assert_that!(&events[3]["causationid"], eq(&events[2]["id"]));
+    assert_that!(
+        events[4]["type"].as_str(),
+        eq(Some(
+            "io.lowkeylab.worktreepool.repository.refresh.finished.v2"
+        ))
+    );
+    assert_that!(&events[4]["causationid"], eq(&events[2]["id"]));
     assert_that!(
         events[1]["subject"].as_str(),
         eq(Some(format!("repositories/{id}").as_str()))
@@ -757,7 +764,7 @@ fn failed_refresh_is_durable_and_repeated_requests_never_report_stale_success() 
     );
     assert_that!(
         result["data"]["operation"]["last_checkpoint"].as_str(),
-        eq(Some("fetch_failed"))
+        eq(Some("discovery_failed"))
     );
     let before = fixture.json(&["events", "list"]);
     let repeated = fixture.json(&["repo", "refresh", "--repo", id]);
@@ -936,7 +943,7 @@ impl Fixture {
 
 #[googletest::test]
 fn refresh_process_death_keeps_intent_or_complete_result_without_blind_retry() {
-    for checkpoint in ["intent", "fetch", "result"] {
+    for checkpoint in ["intent", "baseline", "fetch", "result"] {
         let fixture = Fixture::new();
         fixture.json(&["catalog", "init"]);
         let (source, remote, checkout) = fixture.remote_checkout();
@@ -961,8 +968,10 @@ fn refresh_process_death_keeps_intent_or_complete_result_without_blind_retry() {
             operation["last_checkpoint"].as_str(),
             eq(Some(if checkpoint == "result" {
                 "result_committed"
-            } else {
+            } else if checkpoint == "intent" {
                 "intent_recorded"
+            } else {
+                "baseline_selected"
             }))
         );
         if checkpoint != "result" {
@@ -1135,10 +1144,24 @@ fn refresh_missing_main_transport_and_ref_write_failures_preserve_existing_state
         let operation_id = result["context"]["operation_id"].as_str().unwrap();
         let inspected = fixture.json(&["operation", "inspect", operation_id]);
         let diagnostic = &inspected["data"]["operation"]["diagnostic"];
-        assert_that!(diagnostic["category"].as_str(), eq(Some("git_failed")));
-        assert_that!(diagnostic["stage"].as_str(), eq(Some("fetch")));
         assert_that!(
-            diagnostic["git_exit_status"].as_i64().unwrap() > 0,
+            diagnostic["category"].as_str(),
+            eq(Some(if fault == "missing-main" {
+                "missing_default"
+            } else {
+                "git_failed"
+            }))
+        );
+        assert_that!(
+            diagnostic["stage"].as_str(),
+            eq(Some(if fault == "ref-write" {
+                "fetch"
+            } else {
+                "discovery"
+            }))
+        );
+        assert_that!(
+            diagnostic["git_exit_status"].as_i64().unwrap() >= 0,
             eq(true)
         );
         assert_that!(
@@ -2086,7 +2109,7 @@ fn simultaneous_callers_receive_distinct_registered_worktrees_and_handles() {
     );
 }
 #[googletest::test]
-fn explicit_refs_use_local_commits_without_refreshing_origin_main() {
+fn explicit_refs_resolve_after_fresh_baseline_fetch() {
     for reference in ["HEAD", "main", "local-tag", "origin/main"] {
         let fixture = Fixture::new();
         let (source, checkout, id) = fixture.acquisition();
@@ -2101,46 +2124,42 @@ fn explicit_refs_use_local_commits_without_refreshing_origin_main() {
                 "remote advanced".as_ref(),
             ],
         );
+        let fresh = fixture.git_text(&source, &["rev-parse", "HEAD"]);
+        let expected = if reference == "origin/main" {
+            &fresh
+        } else {
+            &old
+        };
         let result = fixture.json(&["acquire", "--repo", &id, reference]);
         assert_that!(result["outcome"].as_str(), eq(Some("completed")));
         assert_that!(
             result["data"]["assignment"]["resolved_commit"].as_str(),
-            eq(Some(old.as_str()))
+            eq(Some(expected.as_str()))
         );
         assert_that!(
             fixture.git_text(&checkout, &["rev-parse", "HEAD"]),
-            eq(&old)
+            eq(expected)
         );
         assert_that!(
             fixture.git_text(&checkout, &["rev-parse", "refs/remotes/origin/main"]),
-            eq(&old)
+            eq(&fresh)
         );
         assert_that!(
             fixture.json(&["catalog", "info"])["data"]["operations"]
                 .as_array()
                 .unwrap()
                 .is_empty(),
-            eq(true)
+            eq(false)
         );
     }
 }
 #[googletest::test]
-fn explicit_refs_check_out_local_commits_without_a_usable_origin_or_main() {
-    for fault in ["broken-origin", "no-origin", "no-main"] {
+fn explicit_refs_block_when_discovery_or_fetch_fails_despite_local_commits() {
+    for fault in ["broken-origin", "no-origin", "no-main", "ref-lock"] {
         let fixture = Fixture::new();
         let (source, checkout, id) = fixture.acquisition();
-        fs::write(checkout.join("requested"), b"local task content\n").unwrap();
-        fixture.git(&checkout, &["add".as_ref(), ".".as_ref()]);
-        fixture.git(
-            &checkout,
-            &["commit".as_ref(), "-m".as_ref(), "local task".as_ref()],
-        );
         let target = fixture.git_text(&checkout, &["rev-parse", "HEAD"]);
         fixture.git(&checkout, &["tag".as_ref(), "local-task".as_ref()]);
-        fixture.git(
-            &checkout,
-            &["checkout".as_ref(), "--detach".as_ref(), "HEAD^".as_ref()],
-        );
         match fault {
             "broken-origin" => fixture.git(
                 &checkout,
@@ -2155,23 +2174,27 @@ fn explicit_refs_check_out_local_commits_without_a_usable_origin_or_main() {
                 &checkout,
                 &["remote".as_ref(), "remove".as_ref(), "origin".as_ref()],
             ),
+            "no-main" => fixture.git(
+                &source,
+                &[
+                    "update-ref".as_ref(),
+                    "-d".as_ref(),
+                    "refs/heads/main".as_ref(),
+                ],
+            ),
             _ => {
                 fixture.git(
                     &source,
                     &[
-                        "update-ref".as_ref(),
-                        "-d".as_ref(),
-                        "refs/heads/main".as_ref(),
+                        "commit".as_ref(),
+                        "--allow-empty".as_ref(),
+                        "-m".as_ref(),
+                        "advance baseline".as_ref(),
                     ],
                 );
-                fixture.git(
-                    &checkout,
-                    &[
-                        "update-ref".as_ref(),
-                        "-d".as_ref(),
-                        "refs/remotes/origin/main".as_ref(),
-                    ],
-                );
+                let lock = checkout.join(".git/refs/remotes/origin/main.lock");
+                fs::create_dir_all(lock.parent().unwrap()).unwrap();
+                fs::write(lock, b"external lock sentinel").unwrap();
             }
         }
         let result = fixture.json(&[
@@ -2184,29 +2207,38 @@ fn explicit_refs_check_out_local_commits_without_a_usable_origin_or_main() {
                 "local-task"
             },
         ]);
-        assert_that!(result["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(result["outcome"].as_str(), eq(Some("pending")));
+        let operation = result["context"]["operation_id"].as_str().unwrap();
+        let inspected = fixture.json(&["operation", "inspect", operation]);
         assert_that!(
-            result["data"]["assignment"]["resolved_commit"].as_str(),
-            eq(Some(target.as_str()))
+            inspected["data"]["operation"]["diagnostic"]["stage"].as_str(),
+            eq(Some(if fault == "ref-lock" {
+                "fetch"
+            } else {
+                "discovery"
+            }))
         );
         assert_that!(
             fixture.git_text(&checkout, &["rev-parse", "HEAD"]),
             eq(&target)
         );
         assert_that!(
-            fixture.git_text(&checkout, &["branch", "--show-current"]),
-            eq("")
-        );
-        assert_that!(
-            fs::read(checkout.join("requested")).unwrap().as_slice(),
-            eq(b"local task content\n".as_slice())
-        );
-        assert_that!(
-            fixture.json(&["catalog", "info"])["data"]["operations"]
+            fixture.json(&["assignment", "list"])["data"]["assignments"]
                 .as_array()
                 .unwrap()
                 .is_empty(),
             eq(true)
+        );
+        assert_that!(
+            fixture.json(&["acquire", "--repo", &id, "local-task"])["context"]["operation_id"]
+                .as_str(),
+            eq(Some(operation))
+        );
+        let recovered = fixture.json(&["recover", "apply", "--operation", operation]);
+        assert_that!(recovered["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(
+            recovered["data"]["fresh_fetch_proven"].as_bool(),
+            eq(Some(false))
         );
     }
 }
@@ -2224,10 +2256,17 @@ fn explicit_refs_reject_replaced_common_directories_before_acquisition_effects()
     std::os::unix::fs::symlink(other.join(".git"), checkout.join(".git")).unwrap();
     let before = fixture.json(&["events", "list"]);
     let result = fixture.run(&["acquire", "--repo", &id, "HEAD"]);
-    assert_that!(result.status.code(), eq(Some(2)));
+    assert_that!(result.status.code(), eq(Some(3)));
     let result: Value = serde_json::from_slice(&result.stdout).unwrap();
-    assert_that!(result["reason_code"].as_str(), eq(Some("git_failed")));
-    assert_that!(fixture.json(&["events", "list"]), eq(&before));
+    assert_that!(
+        result["reason_code"].as_str(),
+        eq(Some("operation_pending"))
+    );
+    assert_that!(fixture.json(&["events", "list"]) != before, eq(true));
+    assert_that!(
+        result["data"]["operation"]["diagnostic"]["stage"].as_str(),
+        eq(Some("repository_validation"))
+    );
     assert_that!(
         fixture.git_text(&other, &["worktree", "list", "--porcelain"]),
         eq(&worktrees)
@@ -2235,20 +2274,20 @@ fn explicit_refs_reject_replaced_common_directories_before_acquisition_effects()
     assert_that!(checkout.join(".git.saved").is_dir(), eq(true));
 }
 #[googletest::test]
-fn missing_explicit_ref_rejects_without_refresh_or_assignment() {
+fn missing_explicit_ref_rejects_after_refresh_without_assignment() {
     let fixture = Fixture::new();
     let (_, checkout, id) = fixture.acquisition();
-    fixture.git(
-        &checkout,
-        &["remote".as_ref(), "remove".as_ref(), "origin".as_ref()],
-    );
     let head = fixture.git_text(&checkout, &["rev-parse", "HEAD"]);
     let before = fixture.json(&["events", "list"]);
     let result = fixture.run(&["acquire", "--repo", &id, "unknown-ref"]);
     assert_that!(result.status.code(), eq(Some(2)));
     let result: Value = serde_json::from_slice(&result.stdout).unwrap();
     assert_that!(result["reason_code"].as_str(), eq(Some("git_failed")));
-    assert_that!(fixture.json(&["events", "list"]), eq(&before));
+    assert_that!(fixture.json(&["events", "list"]) != before, eq(true));
+    assert_that!(
+        fixture.json(&["repo", "inspect", &id])["data"]["operations"][0]["state"].as_str(),
+        eq(Some("completed"))
+    );
     assert_that!(
         fixture.git_text(&checkout, &["rev-parse", "HEAD"]),
         eq(&head)
@@ -4395,7 +4434,7 @@ fn release_reconciliation_observes_or_completes_the_recorded_preservation_before
 
 #[googletest::test]
 fn refresh_reconciliation_never_repeats_fetch_or_claims_observed_refs_are_fresh() {
-    for checkpoint in ["intent", "fetch"] {
+    for checkpoint in ["intent", "baseline", "fetch"] {
         let fixture = Fixture::new();
         let (source, checkout, id) = fixture.acquisition();
         let mut child = fixture.paused_refresh(&id, checkpoint);
@@ -7212,15 +7251,9 @@ fn failed_acquisition_retains_exact_refresh_diagnostics_through_rebuild_and_reco
     let inspect = fixture.json(&["operation", "inspect", operation]);
     let diagnostic = &inspect["data"]["operation"]["diagnostic"];
     assert_that!(diagnostic["category"].as_str(), eq(Some("git_failed")));
-    assert_that!(diagnostic["stage"].as_str(), eq(Some("fetch")));
-    assert_that!(
-        diagnostic["source_reference"].as_str(),
-        eq(Some("refs/heads/main"))
-    );
-    assert_that!(
-        diagnostic["destination_reference"].as_str(),
-        eq(Some("refs/remotes/origin/main"))
-    );
+    assert_that!(diagnostic["stage"].as_str(), eq(Some("discovery")));
+    assert_that!(diagnostic["source_reference"].as_str(), eq(None));
+    assert_that!(diagnostic["destination_reference"].as_str(), eq(None));
     assert_that!(diagnostic["git_exit_status"].as_i64(), eq(Some(128)));
     assert_that!(
         diagnostic["next_action"].as_str().unwrap().is_empty(),
@@ -7256,4 +7289,314 @@ fn failed_acquisition_retains_exact_refresh_diagnostics_through_rebuild_and_reco
         &fixture.json(&["operation", "inspect", operation])["data"]["operation"]["diagnostic"],
         eq(diagnostic)
     );
+}
+
+#[googletest::test]
+fn default_acquisition_discovers_master_nested_head_and_at_defaults_from_origin() {
+    for branch in ["master", "release/HEAD", "@"] {
+        let fixture = Fixture::new();
+        let (source, checkout, id) = fixture.acquisition();
+        fixture.git(
+            &source,
+            &[
+                "branch".as_ref(),
+                "-m".as_ref(),
+                "main".as_ref(),
+                branch.as_ref(),
+            ],
+        );
+        let expected = fixture.git_text(&source, &["rev-parse", "HEAD"]);
+        let result = fixture.json(&["acquire", "--repo", &id]);
+        assert_that!(result["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(
+            result["data"]["assignment"]["resolved_commit"].as_str(),
+            eq(Some(expected.as_str()))
+        );
+        let refresh = fixture.json(&["repo", "inspect", &id]);
+        assert_that!(
+            refresh["data"]["operations"][0]["baseline"]["source_reference"].as_str(),
+            eq(Some(format!("refs/heads/{branch}").as_str()))
+        );
+        assert_that!(
+            fixture.git_text(&checkout, &["branch", "--show-current"]),
+            eq("")
+        );
+    }
+}
+#[googletest::test]
+fn workflow_retains_the_selected_baseline_and_discovers_changes_on_the_next_refresh() {
+    use worktree_pool::{
+        paths::Paths,
+        workflows::{RefreshCheckpoint, refresh_observed},
+    };
+    let fixture = Fixture::new();
+    fixture.json(&["catalog", "init"]);
+    let (source, remote, checkout) = fixture.remote_checkout();
+    fixture.git(&source, &["branch".as_ref(), "master".as_ref()]);
+    fixture.git(
+        &source,
+        &["push".as_ref(), remote.as_os_str(), "master".as_ref()],
+    );
+    fixture.advance_main(&source, &remote);
+    fixture.git(
+        &source,
+        &[
+            "push".as_ref(),
+            remote.as_os_str(),
+            "main:refs/heads/release/stable".as_ref(),
+        ],
+    );
+    fixture.git(
+        &remote,
+        &[
+            "symbolic-ref".as_ref(),
+            "HEAD".as_ref(),
+            "refs/heads/master".as_ref(),
+        ],
+    );
+    // This stale local symref must not select the baseline.
+    fixture.git(
+        &checkout,
+        &[
+            "symbolic-ref".as_ref(),
+            "refs/remotes/origin/HEAD".as_ref(),
+            "refs/remotes/origin/main".as_ref(),
+        ],
+    );
+    let registered = fixture.path_json(&["repo", "register"], &checkout);
+    let id = registered["context"]["repository_id"].as_str().unwrap();
+    let paths = Paths {
+        catalog: fixture.database(),
+        state: fixture.root.path().join("state/worktree-pool"),
+        json: true,
+    };
+    let (_, first) = refresh_observed(&paths, Some(id.as_ref()), |checkpoint| {
+        if checkpoint == RefreshCheckpoint::BaselineSelected {
+            fixture.git(
+                &remote,
+                &[
+                    "symbolic-ref".as_ref(),
+                    "HEAD".as_ref(),
+                    "refs/heads/release/stable".as_ref(),
+                ],
+            );
+        }
+    })
+    .unwrap();
+    assert_that!(
+        first.baseline.as_ref().unwrap().source_reference.as_str(),
+        eq("refs/heads/master")
+    );
+    assert_that!(
+        first.resolved_commit.as_deref(),
+        eq(Some(
+            fixture.git_text(&source, &["rev-parse", "master"]).as_str()
+        ))
+    );
+    let (_, second) = refresh_observed(&paths, Some(id.as_ref()), |_| {}).unwrap();
+    assert_that!(
+        second.baseline.as_ref().unwrap().source_reference.as_str(),
+        eq("refs/heads/release/stable")
+    );
+    assert_that!(
+        second.resolved_commit.as_deref(),
+        eq(Some(
+            fixture.git_text(&source, &["rev-parse", "main"]).as_str()
+        ))
+    );
+    let history = fixture.json(&["events", "list"]);
+    let inspected = fixture.json(&["operation", "inspect", &first.operation_id.to_string()]);
+    assert_that!(
+        inspected["data"]["operation"]["baseline"]["source_reference"].as_str(),
+        eq(Some("refs/heads/master"))
+    );
+    assert_that!(
+        fixture.json(&["catalog", "rebuild"])["outcome"].as_str(),
+        eq(Some("completed"))
+    );
+    assert_that!(fixture.json(&["events", "list"]), eq(&history));
+    assert_that!(
+        fixture.json(&["operation", "inspect", &first.operation_id.to_string()]),
+        eq(&inspected)
+    );
+}
+
+#[googletest::test]
+fn explicit_master_and_local_task_commits_use_the_fresh_baseline_without_fetching_task_branches() {
+    for task in ["origin/master", "local-task", "commit"] {
+        let fixture = Fixture::new();
+        let (source, checkout, id) = fixture.acquisition();
+        let old = fixture.git_text(&checkout, &["rev-parse", "HEAD"]);
+        fixture.git(&checkout, &["branch".as_ref(), "local-task".as_ref()]);
+        fixture.git(
+            &source,
+            &[
+                "branch".as_ref(),
+                "-m".as_ref(),
+                "main".as_ref(),
+                "master".as_ref(),
+            ],
+        );
+        fixture.git(
+            &source,
+            &[
+                "commit".as_ref(),
+                "--allow-empty".as_ref(),
+                "-m".as_ref(),
+                "advance".as_ref(),
+            ],
+        );
+        fixture.git(&source, &["branch".as_ref(), "remote-task".as_ref()]);
+        let fresh = fixture.git_text(&source, &["rev-parse", "HEAD"]);
+        let result = fixture.json(&[
+            "acquire",
+            "--repo",
+            &id,
+            if task == "commit" { &old } else { task },
+        ]);
+        assert_that!(result["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(
+            result["data"]["assignment"]["resolved_commit"].as_str(),
+            eq(Some(if task == "origin/master" {
+                fresh.as_str()
+            } else {
+                old.as_str()
+            }))
+        );
+        assert_that!(
+            fixture.git_text(&checkout, &["rev-parse", "refs/remotes/origin/master"]),
+            eq(&fresh)
+        );
+        assert_that!(
+            fixture.git_text(
+                &checkout,
+                &["for-each-ref", "refs/remotes/origin/remote-task"]
+            ),
+            eq("")
+        );
+        assert_that!(
+            fixture.git_text(&checkout, &["branch", "--show-current"]),
+            eq("")
+        );
+    }
+}
+
+#[googletest::test]
+fn interrupted_baseline_recovery_uses_recorded_facts_without_remote_access() {
+    for checkpoint in ["intent", "baseline", "fetch"] {
+        let fixture = Fixture::new();
+        let (source, checkout, id) = fixture.acquisition();
+        fixture.git(
+            &source,
+            &[
+                "branch".as_ref(),
+                "-m".as_ref(),
+                "main".as_ref(),
+                "master".as_ref(),
+            ],
+        );
+        let mut child = fixture.paused_refresh(&id, checkpoint);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let operations = fixture.json(&["operation", "list", "--repo", &id]);
+        let operation = operations["data"]["operations"][0]["operation_id"]
+            .as_str()
+            .unwrap();
+        fixture.git(
+            &checkout,
+            &[
+                "remote".as_ref(),
+                "set-url".as_ref(),
+                "origin".as_ref(),
+                fixture.root.path().join("missing-remote").as_os_str(),
+            ],
+        );
+        let recovered = fixture.json(&["recover", "apply", "--operation", operation]);
+        assert_that!(recovered["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(
+            recovered["data"]["fresh_fetch_proven"].as_bool(),
+            eq(Some(false))
+        );
+        assert_that!(
+            recovered["data"]["target_refresh"]["baseline"]["source_reference"].as_str(),
+            eq(if checkpoint == "intent" {
+                None
+            } else {
+                Some("refs/heads/master")
+            })
+        );
+        let expected_commit = fixture.git_text(&source, &["rev-parse", "HEAD"]);
+        assert_that!(
+            recovered["data"]["observed_commit"].as_str(),
+            eq(if checkpoint == "fetch" {
+                Some(expected_commit.as_str())
+            } else {
+                None
+            })
+        );
+        let next = fixture.json(&["acquire", "--repo", &id, "HEAD"]);
+        assert_that!(next["outcome"].as_str(), eq(Some("pending")));
+        assert_that!(
+            next["context"]["operation_id"].as_str() != Some(operation),
+            eq(true)
+        );
+    }
+}
+
+#[googletest::test]
+fn reserved_head_baseline_fails_discovery_before_fetch_or_assignment() {
+    for source_ref in [
+        "refs/heads/HEAD",
+        "refs/heads/HEAD/topic",
+        "refs/heads/HEAD/release/stable",
+    ] {
+        let fixture = Fixture::new();
+        let (source, checkout, id) = fixture.acquisition();
+        let before = fixture.git_text(&checkout, &["show-ref"]);
+        fixture.git(
+            &source,
+            &[
+                "commit".as_ref(),
+                "--allow-empty".as_ref(),
+                "-m".as_ref(),
+                "advance baseline".as_ref(),
+            ],
+        );
+        fixture.git(
+            &source,
+            &["update-ref".as_ref(), source_ref.as_ref(), "HEAD".as_ref()],
+        );
+        fixture.git(
+            &source,
+            &[
+                "symbolic-ref".as_ref(),
+                "HEAD".as_ref(),
+                source_ref.as_ref(),
+            ],
+        );
+        let result = fixture.json(&["acquire", "--repo", &id, "main"]);
+        assert_that!(result["outcome"].as_str(), eq(Some("pending")));
+        assert_that!(
+            result["data"]["operation"]["diagnostic"]["stage"].as_str(),
+            eq(Some("discovery"))
+        );
+        assert_that!(
+            result["data"]["operation"]["diagnostic"]["category"].as_str(),
+            eq(Some("invalid_default"))
+        );
+        assert_that!(result["data"]["operation"].get("baseline"), eq(None));
+        assert_that!(fixture.git_text(&checkout, &["show-ref"]), eq(&before));
+        assert_that!(
+            fixture.json(&["assignment", "list"])["data"]["assignments"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            eq(true)
+        );
+        let operation = result["context"]["operation_id"].as_str().unwrap();
+        assert_that!(
+            &fixture.json(&["operation", "inspect", operation])["data"]["operation"],
+            eq(&result["data"]["operation"])
+        );
+    }
 }
