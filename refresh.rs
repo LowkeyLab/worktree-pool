@@ -147,8 +147,6 @@ impl RefreshBaseline {
             .strip_prefix("refs/heads/")
             .ok_or(crate::error::PoolError::Corrupt)?;
         if branch.is_empty()
-            || branch.starts_with('-')
-            || branch == "@"
             || branch.contains("..")
             || branch.contains("@{")
             || branch.ends_with('.')
@@ -191,10 +189,17 @@ pub(crate) fn interpret_default(stdout: &[u8]) -> Result<RefreshBaseline, Refres
         return Err(failure(FailureCategory::InvalidDefault));
     }
     for line in text.split_terminator('\n') {
-        if let Some(source) = line
-            .strip_prefix("ref: ")
-            .and_then(|line| line.strip_suffix("\tHEAD"))
-        {
+        if line.contains('\r') {
+            return Err(failure(FailureCategory::InvalidDefault));
+        }
+        let (value, reference) = line
+            .split_once('\t')
+            .ok_or_else(|| failure(FailureCategory::InvalidDefault))?;
+        // Git patterns also match reference tails, including branches that end in /HEAD.
+        if reference != "HEAD" {
+            continue;
+        }
+        if let Some(source) = value.strip_prefix("ref: ") {
             if selected.is_some() {
                 return Err(failure(FailureCategory::AmbiguousDefault));
             }
@@ -202,13 +207,11 @@ pub(crate) fn interpret_default(stdout: &[u8]) -> Result<RefreshBaseline, Refres
                 RefreshBaseline::from_source(source)
                     .map_err(|_| failure(FailureCategory::InvalidDefault))?,
             );
-        } else if let Some(oid) = line.strip_suffix("\tHEAD") {
-            if commit.is_some() || !valid_commit(oid) {
+        } else {
+            if commit.is_some() || !valid_commit(value) {
                 return Err(failure(FailureCategory::InvalidDefault));
             }
-            commit = Some(oid);
-        } else {
-            return Err(failure(FailureCategory::InvalidDefault));
+            commit = Some(value);
         }
     }
     let baseline = selected.ok_or_else(|| failure(FailureCategory::MissingDefault))?;

@@ -193,7 +193,7 @@ The repository stream advances for each event. Transactions retain atomic projec
 
 `RefreshBaseline` contains `source_reference` and `destination_reference` strings.
 The source is a valid `refs/heads/<branch>` reference. The destination is the corresponding
-`refs/remotes/origin/<branch>` reference. Branch names must be UTF-8 and pass branch validation.
+`refs/remotes/origin/<branch>` reference. Names must be UTF-8 and pass full-reference validation.
 Selection occurs once before fetch. The operation retains that selection after remote changes.
 
 New operations include `discovers_default:true`. They omit `baseline` until selection.

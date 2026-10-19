@@ -262,6 +262,23 @@ fn remote_default_interpretation_selects_one_usable_branch_without_exposing_inpu
         assert_that!(baseline.source_reference.as_str(), eq(branch));
         assert_that!(baseline.destination_reference.as_str(), eq(destination));
     }
+    let with_tail_match = format!(
+        "ref: refs/heads/release/HEAD\tHEAD\n{oid}\tHEAD\n{oid}\trefs/heads/release/HEAD\n"
+    );
+    assert_that!(
+        interpret_default(with_tail_match.as_bytes())
+            .unwrap()
+            .source_reference
+            .as_str(),
+        eq("refs/heads/release/HEAD")
+    );
+    assert_that!(
+        interpret_default(format!("ref: refs/heads/@\tHEAD\n{oid}\tHEAD\n").as_bytes())
+            .unwrap()
+            .source_reference
+            .as_str(),
+        eq("refs/heads/@")
+    );
     for (input, category) in [
         (String::new(), FailureCategory::MissingDefault),
         (format!("{oid}\tHEAD\n"), FailureCategory::MissingDefault),
@@ -312,7 +329,6 @@ fn remote_default_interpretation_selects_one_usable_branch_without_exposing_inpu
         "a:b",
         "a b",
         "a\nb",
-        "-option",
         "a.",
     ] {
         let diagnostic =

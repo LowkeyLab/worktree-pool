@@ -7292,36 +7292,37 @@ fn failed_acquisition_retains_exact_refresh_diagnostics_through_rebuild_and_reco
 }
 
 #[googletest::test]
-fn default_acquisition_discovers_master_from_origin() {
-    let fixture = Fixture::new();
-    let (source, checkout, id) = fixture.acquisition();
-    fixture.git(
-        &source,
-        &[
-            "branch".as_ref(),
-            "-m".as_ref(),
-            "main".as_ref(),
-            "master".as_ref(),
-        ],
-    );
-    let expected = fixture.git_text(&source, &["rev-parse", "HEAD"]);
-    let result = fixture.json(&["acquire", "--repo", &id]);
-    assert_that!(result["outcome"].as_str(), eq(Some("completed")));
-    assert_that!(
-        result["data"]["assignment"]["resolved_commit"].as_str(),
-        eq(Some(expected.as_str()))
-    );
-    let refresh = fixture.json(&["repo", "inspect", &id]);
-    assert_that!(
-        refresh["data"]["operations"][0]["baseline"]["source_reference"].as_str(),
-        eq(Some("refs/heads/master"))
-    );
-    assert_that!(
-        fixture.git_text(&checkout, &["branch", "--show-current"]),
-        eq("")
-    );
+fn default_acquisition_discovers_master_nested_head_and_at_defaults_from_origin() {
+    for branch in ["master", "release/HEAD", "@"] {
+        let fixture = Fixture::new();
+        let (source, checkout, id) = fixture.acquisition();
+        fixture.git(
+            &source,
+            &[
+                "branch".as_ref(),
+                "-m".as_ref(),
+                "main".as_ref(),
+                branch.as_ref(),
+            ],
+        );
+        let expected = fixture.git_text(&source, &["rev-parse", "HEAD"]);
+        let result = fixture.json(&["acquire", "--repo", &id]);
+        assert_that!(result["outcome"].as_str(), eq(Some("completed")));
+        assert_that!(
+            result["data"]["assignment"]["resolved_commit"].as_str(),
+            eq(Some(expected.as_str()))
+        );
+        let refresh = fixture.json(&["repo", "inspect", &id]);
+        assert_that!(
+            refresh["data"]["operations"][0]["baseline"]["source_reference"].as_str(),
+            eq(Some(format!("refs/heads/{branch}").as_str()))
+        );
+        assert_that!(
+            fixture.git_text(&checkout, &["branch", "--show-current"]),
+            eq("")
+        );
+    }
 }
-
 #[googletest::test]
 fn workflow_retains_the_selected_baseline_and_discovers_changes_on_the_next_refresh() {
     use worktree_pool::{
