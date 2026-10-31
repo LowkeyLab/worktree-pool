@@ -1,6 +1,6 @@
 {
   description = "Worktree pool development shell";
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/7ae733852e8551bcf17cf1ad760ffe18df7a3be0";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/4d438fb7c12dce27206a4a94f78a52c603bc8198";
   outputs = { nixpkgs, ... }: let
     pkgs = import nixpkgs { system = "x86_64-linux"; };
   in {
