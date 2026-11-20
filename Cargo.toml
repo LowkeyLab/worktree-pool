@@ -28,7 +28,7 @@ path = "test_support/main.rs"
 [dependencies]
 anyhow = "=1.0.104"
 chrono = { version = "=0.4.45", features = ["serde"] }
-clap = { version = "=4.6.8", features = ["derive"] }
+clap = { version = "=4.6.9", features = ["derive"] }
 cloudevents-sdk = { version = "=0.9.0", default-features = false }
 config = { version = "=0.15.27", default-features = false, features = ["toml"] }
 redb = "=4.5.0"
